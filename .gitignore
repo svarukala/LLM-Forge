@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# LLM Forge run artifacts (checkpoints, tokenizers, logs)
+runs/
+*.safetensors
+*.log
+
+# Generated / downloaded datasets (recreate with scripts/prepare_data.py).
+# The small bundled samples in data/sample/ ARE tracked.
+data/pretrain/
+data/finetune/
+data/uploads/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

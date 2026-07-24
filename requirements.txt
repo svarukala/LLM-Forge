@@ -1,0 +1,14 @@
+# LLM Forge — Layer 2/3 dependencies (the pure-Python playground needs NONE of these)
+#
+# Install PyTorch first. For NVIDIA GPUs on Windows, prefer the CUDA build:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+# CPU-only is fine for small demos:
+#   pip install torch
+torch>=2.2
+tokenizers>=0.15
+safetensors>=0.4
+numpy>=1.24
+
+# Web dashboard
+fastapi>=0.110
+uvicorn>=0.29

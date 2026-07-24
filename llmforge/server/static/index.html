@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Forge — Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🔨🧠 <span>LLM Forge</span></div>
+    <div class="tagline">Build a tiny language model, live, in your browser.</div>
+  </header>
+
+  <main class="grid">
+    <section class="card wide" id="hw-banner">
+      <h2>0 · Your machine</h2>
+      <p id="hw-line" class="hint">Detecting hardware…</p>
+      <div class="controls">
+        <label>Preset
+          <select id="preset">
+            <option value="">custom (manual knobs below)</option>
+          </select>
+        </label>
+        <span id="preset-blurb" class="filename"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>1 · Pre-train</h2>
+      <p class="hint">Learn from raw text. Watch the loss fall as the model discovers the
+        statistics of language.</p>
+      <div class="controls">
+        <label>Steps <input id="pt-steps" type="number" value="500" min="10" /></label>
+        <label>Layers <input id="pt-layers" type="number" value="4" min="1" /></label>
+        <label>Embd width <input id="pt-embd" type="number" value="128" min="16" /></label>
+        <label>Tokenizer
+          <select id="pt-tok">
+            <option value="char">char (fast, no deps)</option>
+            <option value="bpe">bpe (realistic)</option>
+          </select>
+        </label>
+        <label>Corpus (.txt) <input id="pt-file" type="file" accept=".txt,text/plain" /></label>
+      </div>
+      <p id="pt-file-name" class="filename">Using built-in sample corpus.</p>
+      <button id="btn-pretrain" class="primary">Start pre-training</button>
+    </section>
+
+    <section class="card">
+      <h2>2 · Fine-tune</h2>
+      <p class="hint">Teach the pre-trained model to follow instructions using chat pairs.
+        Requires a base checkpoint first.</p>
+      <div class="controls">
+        <label>Steps <input id="ft-steps" type="number" value="300" min="10" /></label>
+        <label>Chat data (.jsonl) <input id="ft-file" type="file" accept=".jsonl,.json,application/json" /></label>
+      </div>
+      <p id="ft-file-name" class="filename">Using built-in sample chat pairs.</p>
+      <button id="btn-finetune" class="primary">Start fine-tuning</button>
+      <button id="btn-stop" class="danger">Stop</button>
+    </section>
+
+    <section class="card wide">
+      <h2>Training monitor</h2>
+      <div class="stats">
+        <div><span class="k">status</span><span id="stat-status" class="v">idle</span></div>
+        <div><span class="k">step</span><span id="stat-step" class="v">—</span></div>
+        <div><span class="k">loss</span><span id="stat-loss" class="v">—</span></div>
+        <div><span class="k">val</span><span id="stat-val" class="v">—</span></div>
+        <div><span class="k">tok/s</span><span id="stat-tps" class="v">—</span></div>
+        <div><span class="k">device</span><span id="stat-device" class="v">—</span></div>
+      </div>
+      <canvas id="loss-chart" width="720" height="220"></canvas>
+      <h3>Samples during training</h3>
+      <pre id="samples" class="samples"></pre>
+    </section>
+
+    <section class="card wide">
+      <h2>3 · Chat with your model</h2>
+      <p class="hint">Uses the fine-tuned checkpoint (<code>runs/chat</code>).</p>
+      <div id="chat-log" class="chat-log"></div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" placeholder="Ask your model something…" autocomplete="off" />
+        <button class="primary">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Everything runs locally. Models save to <code>runs/</code> in portable safetensors format.
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
