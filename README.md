@@ -73,8 +73,17 @@ python -m llmforge.cli finetune --data data/sample/chat.jsonl --steps 300
 python -m llmforge.cli chat
 ```
 
-Checkpoints are saved in the portable **safetensors** format under `runs/`, so you can
-stop and resume anytime and share models with others.
+Checkpoints are saved in the portable **safetensors** format under `runs/`. Because
+optimizer and step state are saved alongside them, you can **stop a pre-training run and
+resume it later** with `--resume` (see "Advanced training" below), and share checkpoints
+with others.
+
+> ### 🎓 This is an *educational* tiny model, not a general-purpose assistant
+> Everything here is sized to run on a laptop and to make the *mechanics* visible. Even the
+> largest preset is orders of magnitude smaller than ChatGPT-class models and is trained on a
+> tiny slice of data. Expect it to learn grammar, names, and story shape — **not** facts,
+> reasoning, or reliable instruction-following. That gap is the whole point: you get to feel
+> exactly what scale buys. See the "why scale matters" lesson below.
 
 ---
 
@@ -177,7 +186,61 @@ get to **feel** why the industry spends millions on compute, instead of just rea
 
 ---
 
-## 🔵 Layer 3: The web dashboard
+## ⚙️ Advanced training, resuming & inspecting checkpoints
+
+The pipeline exposes the knobs you need for reproducible, resumable runs:
+
+```powershell
+# Resume an interrupted pre-training run (restores optimizer + step + RNG state)
+python -m llmforge.cli pretrain --data data/pretrain/tinystories.txt --out runs/base --resume
+
+# Reproducibility: fix the seed, or go fully deterministic (slower)
+python -m llmforge.cli pretrain --data data/pretrain/tinystories.txt --seed 1337 --deterministic
+
+# Save a periodic checkpoint every N steps; evaluate every N steps
+python -m llmforge.cli pretrain --data data/pretrain/tinystories.txt --checkpoint-every 200 --eval-interval 50
+
+# Gradient accumulation (bigger effective batch) and CUDA mixed precision
+python -m llmforge.cli pretrain --data data/pretrain/tinystories.txt --grad-accum 4 --amp
+
+# Reuse an existing tokenizer only when it's compatible; otherwise it's retrained safely
+python -m llmforge.cli pretrain --data data/pretrain/tinystories.txt --tok-kind bpe --reuse-tokenizer
+```
+
+By default a tokenizer is **retrained** whenever the requested kind/vocab-size or the corpus
+fingerprint differs from the cached one — so `--preset cpu` (BPE) can never silently reuse an
+incompatible char tokenizer. Pass `--reuse-tokenizer` only when you know it's safe.
+
+### Sampling controls
+
+```powershell
+python -m llmforge.cli sample --checkpoint runs/base --prompt "Once upon a time" `
+  --temperature 0.8 --top-k 40 --top-p 0.9        # nucleus sampling
+python -m llmforge.cli sample --checkpoint runs/base --no-stop   # don't stop at <|endoftext|>
+```
+
+### Inspect a checkpoint
+
+```powershell
+python -m llmforge.cli checkpoint-info --checkpoint runs/base
+```
+
+Prints the schema version, model dimensions, tokenizer kind/vocab, dataset & tokenizer
+fingerprints, completed steps, final loss, whether the run completed or was stopped, and
+whether it can be resumed.
+
+### One-command smoke test
+
+Verify the whole pipeline end-to-end (tokenizer → pre-train → sample → fine-tune → chat) on a
+micro model in a few seconds:
+
+```powershell
+python -m llmforge.cli smoke
+```
+
+---
+
+
 
 ```powershell
 python -m llmforge.cli serve
@@ -190,6 +253,10 @@ right **preset**, you can **upload your own corpus** (`.txt`) for pre-training a
 **chat pairs** (`.jsonl`) for fine-tuning, pick the tokenizer (char/BPE) from a dropdown,
 and click **Pre-train → Fine-tune → Chat** in that order. No CLI steps required. Great
 for a lunch-and-learn or a team demo.
+
+> ⚠️ **Security:** the dashboard has **no authentication** and binds to `localhost` only by
+> default. It will refuse to bind to a public interface unless you pass `--allow-public`
+> (which prints a warning). Only expose it on a network you trust. See [`SECURITY.md`](SECURITY.md).
 
 ---
 
@@ -208,11 +275,77 @@ implements the idea:
 
 ---
 
-## Requirements
+## Requirements & hardware
 
-- Python 3.10+
-- For Layer 2/3: PyTorch (CPU works; NVIDIA CUDA GPU strongly recommended for real runs)
-- Built and tested on Windows; works on macOS/Linux too
+- **Python 3.10+**
+- **Layer 1 (playground):** nothing else — pure standard library.
+- **Layer 2/3:** PyTorch. CPU works for the `cpu` preset; an NVIDIA **CUDA** GPU is strongly
+  recommended for the `gpu`/`gpu-large` presets. Apple Silicon (**MPS**) works for CPU-class
+  sizes.
+
+Install PyTorch for your platform, then the package:
+
+```bash
+# CPU-only (Windows/Linux/macOS)
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# NVIDIA CUDA (example: CUDA 12.1) — pick the right index for your driver
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Apple Silicon: the default wheel already includes the MPS backend
+pip install torch
+
+# then, from the repo root:
+pip install -r requirements.txt   # or:  pip install -e ".[dev]"  for the dev tools
+```
+
+### Rough memory & time estimates
+
+| Preset | Params | Peak RAM/VRAM* | Device | ~Time |
+|--------|--------|----------------|--------|-------|
+| `cpu` | ~4M | < 1 GB | any CPU | ~15–20 min (1200 steps) |
+| `gpu` | ~25M | ~2–3 GB VRAM | CUDA GPU | ~1–2 hr (5000 steps) |
+| `gpu-large` | ~85M | ~6–8 GB VRAM | strong CUDA GPU | several hr (12000 steps) |
+
+\* Ballpark for these settings; actual usage depends on batch size, block size, and dtype.
+If you hit an out-of-memory error, lower `--batch-size`, then `--block-size`, then model
+width (`--n-embd`, `--n-layer`).
+
+### Troubleshooting
+
+- **`Corpus too small: N tokens ...`** — your dataset has fewer tokens than the context
+  window needs for both a train and a validation window. Use a bigger corpus, or lower
+  `--block-size`. See `scripts/prepare_data.py` to fetch a right-sized TinyStories slice.
+- **`No usable examples found ...` (fine-tuning)** — every chat example was dropped because
+  the prompt filled the entire context with no room for a response. Shorten prompts or raise
+  `--block-size` (must be ≤ the base model's block size).
+- **CUDA out of memory** — reduce `--batch-size` (and use `--grad-accum` to keep the effective
+  batch), then `--block-size`, then model size. `--amp` also lowers VRAM on CUDA.
+- **Apple Silicon (MPS)** — the `doctor` command detects MPS. Use CPU-class sizes; some ops
+  may fall back to CPU. Set `PYTORCH_ENABLE_MPS_FALLBACK=1` if you hit an unsupported op.
+- **Tokenizer was retrained when I didn't expect it** — that's intentional when the kind,
+  vocab size, or corpus fingerprint changed. Pass `--reuse-tokenizer` only when compatible.
+- **Windows: `pytest` `PermissionError` scanning temp** — see the note in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) about pointing `--basetemp` at a fresh directory.
+
+- Built and tested on Windows; works on macOS/Linux too.
+
+## Development
+
+Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Quality gates (all run in
+CI on Python 3.10–3.12):
+
+```bash
+pip install -e ".[dev]"
+ruff check .            # lint
+ruff format --check .   # formatting
+pyright                 # static types
+pytest -q               # tests
+python -m llmforge.cli smoke   # end-to-end pipeline
+```
+
+See also [`SECURITY.md`](SECURITY.md) (dashboard has no auth) and
+[`CHANGELOG.md`](CHANGELOG.md).
 
 ## License
 

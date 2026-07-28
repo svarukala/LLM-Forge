@@ -6,16 +6,33 @@ learners. This is the same architecture family as GPT-2 / GPT-3 / modern LLMs, j
 Read alongside lessons/03-embeddings-and-attention.md.
 """
 
+# PyTorch's nn.ModuleDict / registered-buffer attribute access and weight tying are dynamic
+# and defeat static stubs (submodules resolve to the generic ``Module`` type). These are
+# well-known false positives for nanoGPT-style code, so the affected checks are relaxed for
+# this file only; real type issues elsewhere in the package are still reported.
+# pyright: reportIndexIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportGeneralTypeIssues=false
+
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
 from .config import ModelConfig
+
+
+def _apply_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:
+    """Nucleus filtering: keep the smallest set of tokens whose cumulative prob >= top_p."""
+    sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
+    cum = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+    remove = cum > top_p
+    # always keep the top-1 token
+    remove[..., 1:] = remove[..., :-1].clone()
+    remove[..., 0] = False
+    remove_scattered = remove.scatter(-1, sorted_idx, remove)
+    return logits.masked_fill(remove_scattered, float("-inf"))
 
 
 class CausalSelfAttention(nn.Module):
@@ -53,7 +70,9 @@ class CausalSelfAttention(nn.Module):
 
         if self.flash:
             y = F.scaled_dot_product_attention(
-                q, k, v,
+                q,
+                k,
+                v,
                 attn_mask=None,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=True,
@@ -104,13 +123,15 @@ class GPT(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.cfg = cfg
-        self.transformer = nn.ModuleDict(dict(
-            wte=nn.Embedding(cfg.vocab_size, cfg.n_embd),   # token embeddings
-            wpe=nn.Embedding(cfg.block_size, cfg.n_embd),   # position embeddings
-            drop=nn.Dropout(cfg.dropout),
-            h=nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)]),
-            ln_f=nn.LayerNorm(cfg.n_embd, bias=cfg.bias),
-        ))
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.Embedding(cfg.vocab_size, cfg.n_embd),  # token embeddings
+                wpe=nn.Embedding(cfg.block_size, cfg.n_embd),  # position embeddings
+                drop=nn.Dropout(cfg.dropout),
+                h=nn.ModuleList([Block(cfg) for _ in range(cfg.n_layer)]),
+                ln_f=nn.LayerNorm(cfg.n_embd, bias=cfg.bias),
+            )
+        )
         self.lm_head = nn.Linear(cfg.n_embd, cfg.vocab_size, bias=False)
         # weight tying: input embedding and output projection share weights
         self.transformer.wte.weight = self.lm_head.weight
@@ -132,8 +153,8 @@ class GPT(nn.Module):
         assert T <= self.cfg.block_size, f"sequence length {T} exceeds block size"
         pos = torch.arange(T, device=idx.device)
 
-        tok_emb = self.transformer.wte(idx)     # (B, T, n_embd)
-        pos_emb = self.transformer.wpe(pos)     # (T, n_embd)
+        tok_emb = self.transformer.wte(idx)  # (B, T, n_embd)
+        pos_emb = self.transformer.wpe(pos)  # (T, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
@@ -165,17 +186,44 @@ class GPT(nn.Module):
         return torch.optim.AdamW(groups, lr=lr, betas=betas)
 
     @torch.no_grad()
-    def generate(self, idx: torch.Tensor, max_new_tokens: int,
-                 temperature: float = 1.0, top_k: int | None = None) -> torch.Tensor:
-        """Autoregressively extend a sequence, one token at a time."""
+    def generate(
+        self,
+        idx: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        eos_token_id: int | None = None,
+    ) -> torch.Tensor:
+        """Autoregressively extend a sequence, one token at a time.
+
+        Stops early once every sequence in the batch has emitted ``eos_token_id`` (if given).
+        Sampling controls are validated to avoid silently-degenerate generation.
+        """
+        if max_new_tokens < 1:
+            raise ValueError("max_new_tokens must be >= 1")
+        if temperature <= 0:
+            raise ValueError("temperature must be > 0")
+        if top_k is not None and top_k < 1:
+            raise ValueError("top_k must be >= 1 when set")
+        if top_p is not None and not (0.0 < top_p <= 1.0):
+            raise ValueError("top_p must be in (0, 1] when set")
+
+        finished = torch.zeros(idx.size(0), dtype=torch.bool, device=idx.device)
         for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.cfg.block_size:]
+            idx_cond = idx[:, -self.cfg.block_size :]
             logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / max(temperature, 1e-6)
+            logits = logits[:, -1, :] / temperature
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = float("-inf")
+            if top_p is not None:
+                logits = _apply_top_p(logits, top_p)
             probs = F.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, next_id), dim=1)
+            if eos_token_id is not None:
+                finished = finished | (next_id.squeeze(1) == eos_token_id)
+                if bool(finished.all()):
+                    break
         return idx

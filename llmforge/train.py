@@ -7,21 +7,25 @@ A single `train()` function drives both:
 Both are just "predict the next token" — fine-tuning simply starts from pre-trained
 weights and only scores the assistant's tokens. That symmetry is the whole point.
 
+The loop is reproducible (all RNGs seeded), reports rich metrics (loss, perplexity,
+throughput, elapsed/ETA), writes accurate completed-step metadata, and can be resumed
+from a saved optimizer/step state.
+
 Read alongside lessons/04-pretraining.md.
 """
 
 from __future__ import annotations
 
 import math
-import os
+import random
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import torch
 
-from .config import ModelConfig, TrainConfig, pick_device
+from .checkpoint import load_train_state, save_checkpoint
+from .config import TrainConfig, pick_device, set_seed
 from .model import GPT
-from .checkpoint import save_checkpoint
 
 
 def _lr_at(step: int, cfg: TrainConfig) -> float:
@@ -31,6 +35,10 @@ def _lr_at(step: int, cfg: TrainConfig) -> float:
     progress = (step - cfg.warmup_steps) / max(1, cfg.steps - cfg.warmup_steps)
     progress = min(1.0, progress)
     return cfg.learning_rate * (0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * progress)))
+
+
+def _perplexity(loss: float) -> float:
+    return math.exp(loss) if loss < 20 else float("inf")
 
 
 @torch.no_grad()
@@ -48,76 +56,202 @@ def _estimate_loss(model: GPT, dataset, cfg: TrainConfig) -> dict:
     return out
 
 
+def _rng_state() -> dict:
+    state = {"python": random.getstate(), "torch": torch.get_rng_state()}
+    try:
+        import numpy as np
+
+        state["numpy"] = np.random.get_state()
+    except ImportError:
+        pass
+    return state
+
+
+def _restore_rng_state(state: dict) -> None:
+    if not state:
+        return
+    if "python" in state:
+        random.setstate(state["python"])
+    if "torch" in state:
+        torch.set_rng_state(state["torch"])
+    if "numpy" in state:
+        try:
+            import numpy as np
+
+            np.random.set_state(state["numpy"])
+        except ImportError:
+            pass
+
+
 def train(
     model: GPT,
     dataset,
     cfg: TrainConfig,
     tokenizer=None,
     tokenizer_path: str = "",
-    on_event: Optional[Callable[[dict], None]] = None,
-    stop_flag: Optional[Callable[[], bool]] = None,
-) -> GPT:
+    on_event: Callable[[dict], None] | None = None,
+    stop_flag: Callable[[], bool] | None = None,
+    resume_dir: str | None = None,
+    extra_meta: dict | None = None,
+) -> dict:
     """Train `model` on `dataset`. Emits progress dicts via `on_event` (for the dashboard).
 
-    `on_event` receives dicts like:
-      {"type": "step",  "step": 50, "loss": 3.1, "lr": 3e-4, "tok_per_sec": 12000}
-      {"type": "eval",  "step": 50, "train": 3.0, "val": 3.2}
-      {"type": "sample","step": 100, "text": "..."}
-      {"type": "done",  "out_dir": "runs/base"}
+    Returns a result dict: {"status", "completed_steps", "final_loss", "out_dir"}.
+    `status` is "completed" if all steps ran, or "stopped" if interrupted via `stop_flag`.
     """
+    if cfg.steps <= 0:
+        raise ValueError(f"steps must be >= 1, got {cfg.steps}")
+    if cfg.grad_accum < 1:
+        raise ValueError(f"grad_accum must be >= 1, got {cfg.grad_accum}")
+
     device = pick_device(cfg.device)
+    set_seed(cfg.seed, cfg.deterministic)
     model.to(device)
     model.train()
-    torch.manual_seed(cfg.seed)
 
     optimizer = model.configure_optimizer(cfg.weight_decay, cfg.learning_rate)
-    os.makedirs(cfg.out_dir, exist_ok=True)
+
+    start_step = 0
+    if resume_dir:
+        state = load_train_state(resume_dir)
+        if state is not None:
+            optimizer.load_state_dict(state["optimizer"])
+            start_step = int(state.get("step", 0))
+            _restore_rng_state(state.get("rng", {}))
+
+    use_amp = bool(cfg.amp and device == "cuda")
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
 
     def emit(evt: dict) -> None:
         if on_event:
             on_event(evt)
 
-    emit({"type": "start", "params": model.num_params(), "device": device,
-          "steps": cfg.steps})
+    emit(
+        {
+            "type": "start",
+            "params": model.num_params(),
+            "device": device,
+            "steps": cfg.steps,
+            "start_step": start_step,
+        }
+    )
+
+    def _save(status: str, completed_steps: int, final_loss: float) -> None:
+        meta = {
+            "steps_requested": cfg.steps,
+            "completed_steps": completed_steps,
+            "final_loss": final_loss,
+            "final_perplexity": _perplexity(final_loss),
+            "status": status,
+            "seed": cfg.seed,
+            "train_config": cfg.as_dict(),
+        }
+        if extra_meta:
+            meta.update(extra_meta)
+        train_state = {
+            "optimizer": optimizer.state_dict(),
+            "step": completed_steps,
+            "rng": _rng_state(),
+        }
+        save_checkpoint(cfg.out_dir, model, tokenizer_path, meta=meta, train_state=train_state)
 
     t0 = time.time()
+    run_start = time.time()
     tokens_since = 0
-    for step in range(1, cfg.steps + 1):
+    last_loss = float("nan")
+    completed = start_step
+    status = "completed"
+
+    for step in range(start_step + 1, cfg.steps + 1):
         if stop_flag and stop_flag():
-            emit({"type": "stopped", "step": step})
+            status = "stopped"
+            emit({"type": "stopped", "step": step - 1})
             break
 
         lr = _lr_at(step, cfg)
         for group in optimizer.param_groups:
             group["lr"] = lr
 
-        x, y = dataset.get_batch("train", cfg.batch_size)
-        _, loss = model(x, y)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-        optimizer.step()
+        step_tokens = 0
+        for _ in range(cfg.grad_accum):
+            x, y = dataset.get_batch("train", cfg.batch_size)
+            if scaler is not None:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    _, loss = model(x, y)
+                scaler.scale(loss / cfg.grad_accum).backward()
+            else:
+                _, loss = model(x, y)
+                (loss / cfg.grad_accum).backward()
+            step_tokens += x.numel()
+        last_loss = float(loss.item())
 
-        tokens_since += x.numel()
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+            optimizer.step()
+
+        completed = step
+        tokens_since += step_tokens
+
         if step % 10 == 0 or step == 1:
             dt = time.time() - t0
             tps = tokens_since / dt if dt > 0 else 0.0
-            emit({"type": "step", "step": step, "loss": float(loss.item()),
-                  "lr": lr, "tok_per_sec": tps})
+            elapsed = time.time() - run_start
+            done = step - start_step
+            remaining = cfg.steps - step
+            eta = (elapsed / done) * remaining if done > 0 else 0.0
+            emit(
+                {
+                    "type": "step",
+                    "step": step,
+                    "loss": last_loss,
+                    "perplexity": _perplexity(last_loss),
+                    "lr": lr,
+                    "tok_per_sec": tps,
+                    "elapsed_s": elapsed,
+                    "eta_s": eta,
+                }
+            )
             t0, tokens_since = time.time(), 0
 
-        if step % cfg.eval_interval == 0 or step == cfg.steps:
+        if (cfg.eval_interval and step % cfg.eval_interval == 0) or step == cfg.steps:
             metrics = _estimate_loss(model, dataset, cfg)
-            emit({"type": "eval", "step": step, **metrics})
+            emit(
+                {
+                    "type": "eval",
+                    "step": step,
+                    **metrics,
+                    "val_perplexity": _perplexity(metrics["val"]),
+                }
+            )
 
-        if tokenizer is not None and (step % cfg.sample_every == 0):
-            text = _quick_sample(model, tokenizer, device)
-            emit({"type": "sample", "step": step, "text": text})
+        if tokenizer is not None and cfg.sample_every and (step % cfg.sample_every == 0):
+            emit({"type": "sample", "step": step, "text": _quick_sample(model, tokenizer, device)})
 
-    save_checkpoint(cfg.out_dir, model, tokenizer_path,
-                    meta={"steps": cfg.steps, "final_loss": float(loss.item())})
-    emit({"type": "done", "out_dir": cfg.out_dir})
-    return model
+        if cfg.checkpoint_every and step % cfg.checkpoint_every == 0 and step != cfg.steps:
+            _save("in_progress", completed, last_loss)
+
+    _save(status, completed, last_loss)
+    emit(
+        {
+            "type": "done",
+            "out_dir": cfg.out_dir,
+            "status": status,
+            "completed_steps": completed,
+            "final_loss": last_loss,
+        }
+    )
+    return {
+        "status": status,
+        "completed_steps": completed,
+        "final_loss": last_loss,
+        "out_dir": cfg.out_dir,
+    }
 
 
 @torch.no_grad()
@@ -125,6 +259,13 @@ def _quick_sample(model: GPT, tokenizer, device: str, n: int = 80) -> str:
     model.eval()
     start = tokenizer.encode("The") or [0]
     idx = torch.tensor([start], dtype=torch.long, device=device)
-    out = model.generate(idx, max_new_tokens=n, temperature=0.8, top_k=40)
+    eos = None
+    try:
+        from .data import EOT
+
+        eos = tokenizer.token_id(EOT)
+    except Exception:
+        eos = None
+    out = model.generate(idx, max_new_tokens=n, temperature=0.8, top_k=40, eos_token_id=eos)
     model.train()
     return tokenizer.decode(out[0].tolist())

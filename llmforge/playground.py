@@ -22,7 +22,7 @@ CORPUS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "sample", "c
 
 def load_text() -> str:
     try:
-        with open(CORPUS_PATH, "r", encoding="utf-8") as f:
+        with open(CORPUS_PATH, encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         # Fallback so the demo always runs even without the sample file.
@@ -87,7 +87,7 @@ def main() -> None:
     V = len(chars)
 
     data = [stoi[c] for c in text]
-    pairs = list(zip(data, data[1:]))
+    pairs = list(zip(data, data[1:], strict=False))
 
     print("=" * 64)
     print("  LLM Forge - Layer 1 Playground (pure Python, zero dependencies)")

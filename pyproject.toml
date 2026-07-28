@@ -11,12 +11,21 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "LLM Forge contributors" }]
 dependencies = [
-    "torch>=2.2",
-    "tokenizers>=0.15",
-    "safetensors>=0.4",
-    "numpy>=1.24",
-    "fastapi>=0.110",
-    "uvicorn>=0.29",
+    "torch>=2.2,<3.0",
+    "tokenizers>=0.15,<0.24",
+    "safetensors>=0.4,<0.9",
+    "numpy>=1.24,<3.0",
+    "fastapi>=0.110,<0.200",
+    "uvicorn>=0.29,<0.40",
+    "pydantic>=2.5,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "httpx>=0.27,<0.29",
+    "ruff>=0.5,<0.13",
+    "pyright>=1.1.350,<2.0",
 ]
 
 [project.scripts]
@@ -24,3 +33,23 @@ llm-forge = "llmforge.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["llmforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]
+
+[tool.pyright]
+include = ["llmforge"]
+exclude = ["**/__pycache__", "runs", "data"]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingImports = false

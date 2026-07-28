@@ -1,14 +1,26 @@
 # LLM Forge — Layer 2/3 dependencies (the pure-Python playground needs NONE of these)
 #
-# Install PyTorch first. For NVIDIA GPUs on Windows, prefer the CUDA build:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu124
-# CPU-only is fine for small demos:
-#   pip install torch
-torch>=2.2
-tokenizers>=0.15
-safetensors>=0.4
-numpy>=1.24
+# Install PyTorch FIRST, choosing the build that matches your hardware:
+#   CPU-only (any machine):
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   NVIDIA CUDA 12.4 (Windows/Linux with an NVIDIA GPU):
+#     pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   Apple Silicon (macOS): the default wheel already includes MPS support:
+#     pip install torch
+#
+# Then install the rest with:  pip install -r requirements.txt
+torch>=2.2,<3.0
+tokenizers>=0.15,<0.24
+safetensors>=0.4,<0.9
+numpy>=1.24,<3.0
 
 # Web dashboard
-fastapi>=0.110
-uvicorn>=0.29
+fastapi>=0.110,<0.200
+uvicorn>=0.29,<0.40
+pydantic>=2.5,<3.0
+
+# Dev/test tooling (optional; also available via `pip install -e .[dev]`)
+# pytest>=8.0,<9.0
+# httpx>=0.27,<0.29
+# ruff>=0.5,<0.13
+# pyright>=1.1.350,<2.0

@@ -10,7 +10,6 @@ we auto-recommend the right one for the machine you're on.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -19,7 +18,7 @@ class Preset:
 
     name: str
     blurb: str
-    tier: str            # "cpu" or "gpu"
+    tier: str  # "cpu" or "gpu"
     # tokenizer
     tok_kind: str
     vocab_size: int
@@ -66,46 +65,73 @@ PRESETS = {
     "cpu": Preset(
         name="cpu",
         blurb="CPU-friendly. Coherent sentences in ~15-20 min. Topic-following is loose "
-              "(this is the teaching moment about scale).",
+        "(this is the teaching moment about scale).",
         tier="cpu",
-        tok_kind="bpe", vocab_size=4096,
-        block_size=128, n_layer=4, n_head=4, n_embd=256,
-        batch_size=32, pretrain_steps=1200, finetune_steps=500,
-        lr=3e-4, finetune_lr=1e-4,
-        data_mb=6.0, approx_params_m=4.2, est_time="~15-20 min on CPU",
+        tok_kind="bpe",
+        vocab_size=4096,
+        block_size=128,
+        n_layer=4,
+        n_head=4,
+        n_embd=256,
+        batch_size=32,
+        pretrain_steps=1200,
+        finetune_steps=500,
+        lr=3e-4,
+        finetune_lr=1e-4,
+        data_mb=6.0,
+        approx_params_m=4.2,
+        est_time="~15-20 min on CPU",
     ),
     # Needs a CUDA GPU. ~25M params, binds prompt->content, stops cleanly.
     "gpu": Preset(
         name="gpu",
         blurb="GPU-friendly (~25M params). Follows the prompt topic and stops cleanly. "
-              "Needs CUDA; ~1-2 hrs on a consumer GPU.",
+        "Needs CUDA; ~1-2 hrs on a consumer GPU.",
         tier="gpu",
-        tok_kind="bpe", vocab_size=8192,
-        block_size=256, n_layer=8, n_head=8, n_embd=512,
-        batch_size=48, pretrain_steps=5000, finetune_steps=1500,
-        lr=6e-4, finetune_lr=1e-4,
-        data_mb=30.0, approx_params_m=25.0, est_time="~1-2 hrs on a consumer CUDA GPU",
+        tok_kind="bpe",
+        vocab_size=8192,
+        block_size=256,
+        n_layer=8,
+        n_head=8,
+        n_embd=512,
+        batch_size=48,
+        pretrain_steps=5000,
+        finetune_steps=1500,
+        lr=6e-4,
+        finetune_lr=1e-4,
+        data_mb=30.0,
+        approx_params_m=25.0,
+        est_time="~1-2 hrs on a consumer CUDA GPU",
     ),
     # For the brave with a beefy GPU: GPT-2-small-ish. Noticeably better prose.
     "gpu-large": Preset(
         name="gpu-large",
         blurb="Bigger GPU preset (~85M params, GPT-2-small class). Best prose; needs a "
-              "strong GPU and more data/time.",
+        "strong GPU and more data/time.",
         tier="gpu",
-        tok_kind="bpe", vocab_size=8192,
-        block_size=512, n_layer=12, n_head=12, n_embd=768,
-        batch_size=32, pretrain_steps=12000, finetune_steps=3000,
-        lr=6e-4, finetune_lr=8e-5,
-        data_mb=100.0, approx_params_m=85.0, est_time="several hrs on a strong CUDA GPU",
+        tok_kind="bpe",
+        vocab_size=8192,
+        block_size=512,
+        n_layer=12,
+        n_head=12,
+        n_embd=768,
+        batch_size=32,
+        pretrain_steps=12000,
+        finetune_steps=3000,
+        lr=6e-4,
+        finetune_lr=8e-5,
+        data_mb=100.0,
+        approx_params_m=85.0,
+        est_time="several hrs on a strong CUDA GPU",
     ),
 }
 
 
 @dataclass
 class Hardware:
-    device: str            # cpu | cuda | mps
-    gpu_name: Optional[str]
-    gpu_mem_gb: Optional[float]
+    device: str  # cpu | cuda | mps
+    gpu_name: str | None
+    gpu_mem_gb: float | None
     cuda: bool
 
     def as_dict(self) -> dict:
@@ -127,7 +153,7 @@ def detect_hardware() -> Hardware:
     if torch.cuda.is_available():
         try:
             props = torch.cuda.get_device_properties(0)
-            mem = round(props.total_memory / (1024 ** 3), 1)
+            mem = round(props.total_memory / (1024**3), 1)
             return Hardware(device="cuda", gpu_name=props.name, gpu_mem_gb=mem, cuda=True)
         except Exception:
             return Hardware(device="cuda", gpu_name="CUDA GPU", gpu_mem_gb=None, cuda=True)
@@ -139,7 +165,7 @@ def detect_hardware() -> Hardware:
     return Hardware(device="cpu", gpu_name=None, gpu_mem_gb=None, cuda=False)
 
 
-def recommend_preset(hw: Optional[Hardware] = None) -> str:
+def recommend_preset(hw: Hardware | None = None) -> str:
     """Pick the best preset name for the detected hardware."""
     hw = hw or detect_hardware()
     if hw.device == "cuda":

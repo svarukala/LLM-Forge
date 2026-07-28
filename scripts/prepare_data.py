@@ -24,8 +24,12 @@ import random
 import re
 import urllib.request
 
-VALID_URL = "https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-valid.txt"
-TRAIN_URL = "https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-train.txt"
+VALID_URL = (
+    "https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-valid.txt"
+)
+TRAIN_URL = (
+    "https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/TinyStories-train.txt"
+)
 SEP = "<|endoftext|>"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,10 +48,46 @@ INSTRUCTIONS = [
 # Common TinyStories subjects. If a story contains one, we phrase the instruction to name
 # it -- this is what teaches the model to CONDITION on the topic you ask for.
 SUBJECTS = [
-    "dog", "puppy", "cat", "kitten", "bird", "rabbit", "bunny", "bear", "fish", "frog",
-    "duck", "mouse", "fox", "lion", "horse", "pig", "cow", "sheep", "elephant", "monkey",
-    "ball", "tree", "car", "truck", "train", "boat", "plane", "flower", "robot", "dragon",
-    "teddy", "balloon", "cake", "star", "moon", "boy", "girl", "kite", "boat", "garden",
+    "dog",
+    "puppy",
+    "cat",
+    "kitten",
+    "bird",
+    "rabbit",
+    "bunny",
+    "bear",
+    "fish",
+    "frog",
+    "duck",
+    "mouse",
+    "fox",
+    "lion",
+    "horse",
+    "pig",
+    "cow",
+    "sheep",
+    "elephant",
+    "monkey",
+    "ball",
+    "tree",
+    "car",
+    "truck",
+    "train",
+    "boat",
+    "plane",
+    "flower",
+    "robot",
+    "dragon",
+    "teddy",
+    "balloon",
+    "cake",
+    "star",
+    "moon",
+    "boy",
+    "girl",
+    "kite",
+    "boat",
+    "garden",
 ]
 
 TOPIC_TEMPLATES = [
@@ -88,7 +128,7 @@ def stream_slice(url: str, target_bytes: int) -> str:
     # trim the trailing partial story so the corpus ends cleanly
     cut = text.rfind(SEP)
     if cut != -1:
-        text = text[:cut + len(SEP)]
+        text = text[: cut + len(SEP)]
     return text
 
 
@@ -122,23 +162,38 @@ def build_sft(stories: list[str], n: int, min_words: int, max_words: int) -> lis
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pretrain-mb", type=float, default=6.0,
-                    help="approx MB of story text for pre-training (default 6)")
-    ap.add_argument("--sft-examples", type=int, default=1200,
-                    help="number of instruction/story pairs for fine-tuning")
+    ap.add_argument(
+        "--pretrain-mb",
+        type=float,
+        default=6.0,
+        help="approx MB of story text for pre-training (default 6)",
+    )
+    ap.add_argument(
+        "--sft-examples",
+        type=int,
+        default=1200,
+        help="number of instruction/story pairs for fine-tuning",
+    )
     ap.add_argument("--min-words", type=int, default=40)
     ap.add_argument("--max-words", type=int, default=180)
-    ap.add_argument("--source", choices=["valid", "train"], default="valid",
-                    help="'valid' is smaller and fast; 'train' for a bigger slice")
-    ap.add_argument("--reuse-corpus", action="store_true",
-                    help="skip download and rebuild the SFT set from the existing corpus")
+    ap.add_argument(
+        "--source",
+        choices=["valid", "train"],
+        default="valid",
+        help="'valid' is smaller and fast; 'train' for a bigger slice",
+    )
+    ap.add_argument(
+        "--reuse-corpus",
+        action="store_true",
+        help="skip download and rebuild the SFT set from the existing corpus",
+    )
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(PRETRAIN_OUT), exist_ok=True)
     os.makedirs(os.path.dirname(SFT_OUT), exist_ok=True)
 
     if args.reuse_corpus and os.path.exists(PRETRAIN_OUT):
-        with open(PRETRAIN_OUT, "r", encoding="utf-8") as f:
+        with open(PRETRAIN_OUT, encoding="utf-8") as f:
             text = f.read()
         print(f"Reusing existing corpus {PRETRAIN_OUT} ({len(text)/1e6:.2f} MB)")
     else:
