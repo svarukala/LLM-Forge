@@ -91,6 +91,22 @@ def test_safe_data_path_rejects_outside():
         _safe_data_path(os.path.join("runs", "base", "config.json"))
 
 
+def test_under_runs_default_base_not_double_joined(monkeypatch, tmp_path):
+    """Regression: the fine-tune default base must resolve to <RUNS_DIR>/base, not
+    <RUNS_DIR>/runs/base, when RUNS_DIR is the default *relative* 'runs' path."""
+    from llmforge.server import app as app_module
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(app_module, "RUNS_DIR", "runs")
+    expected = os.path.abspath(os.path.join("runs", "base"))  # where pretrain writes
+    # The default the fine-tune endpoint computes:
+    assert app_module._under_runs(os.path.join("runs", "base")) == expected
+    # A bare checkpoint name is still interpreted relative to RUNS_DIR:
+    assert app_module._under_runs("base") == expected
+    # An absolute path inside RUNS_DIR round-trips too:
+    assert app_module._under_runs(expected) == expected
+
+
 def test_concurrent_job_rejected():
     app = create_app()
     c = TestClient(app)

@@ -154,10 +154,24 @@ def _safe_run_path(*parts: str) -> str:
 
 
 def _under_runs(path: str) -> str:
-    """Normalise an incoming checkpoint/base path to a safe path inside RUNS_DIR."""
-    if os.path.isabs(path):
-        rel = os.path.relpath(os.path.abspath(path), os.path.abspath(RUNS_DIR))
-        return _safe_run_path(rel)
+    """Normalise an incoming checkpoint/base path to a safe path inside RUNS_DIR.
+
+    Accepts three shapes and maps them all to an absolute path inside RUNS_DIR:
+      * an absolute path already inside RUNS_DIR (e.g. an upload echo);
+      * a relative path that resolves (against the CWD) into RUNS_DIR, such as the default
+        ``os.path.join(RUNS_DIR, "base")`` when RUNS_DIR is the relative ``"runs"`` -- this
+        must NOT be re-joined under RUNS_DIR (doing so produced ``runs/runs/base``);
+      * a bare checkpoint name (e.g. ``"base"``) interpreted relative to RUNS_DIR.
+    Anything that escapes RUNS_DIR raises ValueError via ``_safe_run_path``.
+    """
+    root = os.path.abspath(RUNS_DIR)
+    resolved = os.path.abspath(path)
+    try:
+        inside = resolved == root or os.path.commonpath([resolved, root]) == root
+    except ValueError:
+        inside = False  # different drives on Windows
+    if inside:
+        return _safe_run_path(os.path.relpath(resolved, root))
     return _safe_run_path(path)
 
 
