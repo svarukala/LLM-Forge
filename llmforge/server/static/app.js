@@ -127,6 +127,16 @@ function hideError() {
   $("error-message").textContent = "";
 }
 
+function showInfo(message) {
+  $("info-message").textContent = message || "";
+  $("info-banner").hidden = false;
+}
+
+function hideInfo() {
+  $("info-banner").hidden = true;
+  $("info-message").textContent = "";
+}
+
 function setProgress(step, total) {
   const bar = $("progress-bar");
   if (!total || total <= 0) {
@@ -204,6 +214,9 @@ function handleEvent(evt) {
       showError(evt.message);
       $("samples").textContent += `\n[ERROR] ${evt.message}\n`;
       break;
+    case "info":
+      showInfo(evt.message);
+      break;
   }
 }
 
@@ -269,6 +282,7 @@ $("btn-pretrain").onclick = async () => {
   if (preset) body.preset = preset;
   if (uploadedCorpus) body.data = uploadedCorpus;
   hideError();
+  hideInfo();
   setTraining(true);                 // lock immediately so a fast double-click can't double-start
   showProgress(true);
   setProgress(0, +$("pt-steps").value);
@@ -282,6 +296,7 @@ $("btn-finetune").onclick = async () => {
   if (preset) body.preset = preset;
   if (uploadedChat) body.data = uploadedChat;
   hideError();
+  hideInfo();
   setTraining(true);
   showProgress(true);
   setProgress(0, +$("ft-steps").value);

@@ -5,7 +5,12 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from llmforge.server.app import TrainingManager, _safe_data_path, create_app
+from llmforge.server.app import (
+    TrainingManager,
+    _fit_block_size,
+    _safe_data_path,
+    create_app,
+)
 
 
 def client():
@@ -129,3 +134,15 @@ def test_cache_invalidation_clears_session():
     cache[os.path.abspath(key)] = object()
     mgr._invalidate_checkpoint(key)
     assert os.path.abspath(key) not in cache
+
+
+def test_fit_block_size_shrinks_for_small_corpus():
+    # Large corpus: keep the requested window, no shrink.
+    assert _fit_block_size(10_000, 128) == (128, False)
+    # Small corpus (126 tokens): largest fitting window is 126//2 - 1 = 62, and it shrank.
+    assert _fit_block_size(126, 128) == (62, True)
+    # Exactly enough for the requested window: no shrink.
+    assert _fit_block_size(2 * (128 + 1), 128) == (128, False)
+    # Tinier than the floor still fits: PretrainData will raise its clear error, not us.
+    bs, shrunk = _fit_block_size(10, 128, floor=8)
+    assert bs == 8 and shrunk is False

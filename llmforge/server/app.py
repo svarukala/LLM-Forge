@@ -161,6 +161,21 @@ def _under_runs(path: str) -> str:
     return _safe_run_path(path)
 
 
+def _fit_block_size(n_tokens: int, requested: int, floor: int = 8) -> tuple[int, bool]:
+    """Pick a context window that fits a (possibly tiny) corpus.
+
+    ``PretrainData`` needs ``2 * (block_size + 1)`` tokens (a full train and validation
+    window). Beginners often paste only a few sentences, so instead of failing we shrink the
+    window to the largest value that fits, down to ``floor``. Returns the chosen block size
+    and whether it was reduced below ``requested``. If even ``floor`` will not fit, we return
+    ``floor`` and let ``PretrainData`` raise its clear "corpus too small" error.
+    """
+    max_fit = n_tokens // 2 - 1
+    block_size = min(requested, max_fit)
+    shrunk = block_size < requested and block_size >= floor
+    return max(block_size, floor), shrunk
+
+
 def _safe_data_path(path: str) -> str:
     """Restrict a browser-supplied dataset path to trusted locations.
 
@@ -360,15 +375,30 @@ class TrainingManager:
                 tokenizer.save(tok_path)
                 save_tokenizer_meta(tok_path, tok_kind, tokenizer.vocab_size, fingerprint)
 
+            ids = tokenizer.encode(text)
+            # Beginners often paste just a few sentences. Rather than failing with a
+            # "corpus too small" error, shrink the context window to fit small uploads.
+            requested_block = int(params.get("block_size") or 128)
+            block_size, shrunk = _fit_block_size(len(ids), requested_block)
+            if shrunk:
+                self._emit(
+                    {
+                        "type": "info",
+                        "message": (
+                            f"Your corpus is small ({len(ids)} tokens), so the context window "
+                            f"was reduced from {requested_block} to {block_size} so training can "
+                            f"run. Upload a longer corpus for richer results."
+                        ),
+                    }
+                )
             mcfg = ModelConfig(
                 vocab_size=tokenizer.vocab_size,
-                block_size=int(params.get("block_size") or 128),
+                block_size=block_size,
                 n_layer=int(params.get("n_layer") or 4),
                 n_head=int(params.get("n_head") or 4),
                 n_embd=int(params.get("n_embd") or 128),
             )
             model = GPT(mcfg)
-            ids = tokenizer.encode(text)
             dataset = PretrainData(ids, block_size=mcfg.block_size, device=device)
             out_dir = os.path.join(RUNS_DIR, "base")
             tcfg = TrainConfig(
