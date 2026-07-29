@@ -35,6 +35,11 @@ body {
 .card.wide { grid-column: 1 / -1; }
 .monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .monitor-head .hint { margin: 0; }
+.error-banner { background: rgba(220, 60, 60, .12); border: 1px solid var(--danger); color: var(--danger); border-radius: 8px; padding: 10px 12px; margin: 0 0 14px; font-size: 13px; }
+.error-banner strong { display: block; margin-bottom: 2px; }
+.error-banner #error-message { display: block; color: var(--ink); word-break: break-word; margin-bottom: 4px; }
+.error-banner small { color: var(--muted); }
+.error-banner code { background: rgba(0,0,0,.2); padding: 1px 4px; border-radius: 4px; }
 .card h2 { margin: 0 0 6px; font-size: 16px; }
 .card h3 { margin: 16px 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
 .hint { color: var(--muted); margin: 0 0 14px; font-size: 13px; }

@@ -116,6 +116,17 @@ function showProgress(show) {
   $("progress-wrap").hidden = !show;
 }
 
+function showError(message) {
+  $("error-message").textContent = message || "Unknown error.";
+  $("error-banner").hidden = false;
+  $("error-banner").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function hideError() {
+  $("error-banner").hidden = true;
+  $("error-message").textContent = "";
+}
+
 function setProgress(step, total) {
   const bar = $("progress-bar");
   if (!total || total <= 0) {
@@ -146,6 +157,7 @@ function handleEvent(evt) {
       setStat("stat-status", "training");
       setStat("stat-device", evt.device);
       setStat("stat-eta", "—");
+      hideError();
       lossPoints.length = 0;
       $("samples").textContent = "";
       totalSteps = evt.steps || 0;
@@ -187,7 +199,9 @@ function handleEvent(evt) {
       setStat("stat-status", "error");
       setStat("stat-eta", "—");
       $("progress-bar").classList.remove("indeterminate");
+      showProgress(false);
       setTraining(false);
+      showError(evt.message);
       $("samples").textContent += `\n[ERROR] ${evt.message}\n`;
       break;
   }
@@ -254,6 +268,7 @@ $("btn-pretrain").onclick = async () => {
   const preset = $("preset").value;
   if (preset) body.preset = preset;
   if (uploadedCorpus) body.data = uploadedCorpus;
+  hideError();
   setTraining(true);                 // lock immediately so a fast double-click can't double-start
   showProgress(true);
   setProgress(0, +$("pt-steps").value);
@@ -266,6 +281,7 @@ $("btn-finetune").onclick = async () => {
   const preset = $("preset").value;
   if (preset) body.preset = preset;
   if (uploadedChat) body.data = uploadedChat;
+  hideError();
   setTraining(true);
   showProgress(true);
   setProgress(0, +$("ft-steps").value);
@@ -275,13 +291,14 @@ $("btn-finetune").onclick = async () => {
 
 async function reportStartError(r) {
   showProgress(false);
-  if (r.status === 409) { alert("A training job is already running."); return; }
+  if (r.status === 409) { showError("A training job is already running. Stop it before starting another."); return; }
   let detail = `Could not start (HTTP ${r.status}).`;
   try {
     const d = await r.json();
-    if (d && d.error) detail = typeof d.error === "string" ? d.error : JSON.stringify(d.error);
+    const raw = d && (d.error ?? d.detail);
+    if (raw != null) detail = typeof raw === "string" ? raw : JSON.stringify(raw);
   } catch {}
-  alert(detail);
+  showError(detail);
 }
 
 $("btn-stop").onclick = () => post("/api/stop", {});
@@ -317,6 +334,10 @@ async function refreshStatus() {
       totalSteps = s.total_steps || totalSteps;
       showProgress(true);
       setProgress(s.current_step || 0, totalSteps);
+    } else if (s.status === "error" && s.error) {
+      // A job failed while we were away — surface it on reload.
+      setStat("stat-status", "error");
+      showError(s.error);
     } else if ($("stat-status").textContent === "idle") {
       setStat("stat-status", s.checkpoints.length ? "idle" : "no checkpoints yet");
     }

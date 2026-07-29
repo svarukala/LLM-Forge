@@ -15,6 +15,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 import uuid
 from collections.abc import Callable
 
@@ -396,6 +397,7 @@ class TrainingManager:
             status = result.get("status", "completed")
             self._invalidate_checkpoint(out_dir)
         except Exception as exc:  # surface errors to the UI instead of dying silently
+            traceback.print_exc()
             self._emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         finally:
             self._finish(status)
@@ -444,6 +446,7 @@ class TrainingManager:
             status = result.get("status", "completed")
             self._invalidate_checkpoint(out_dir)
         except Exception as exc:
+            traceback.print_exc()
             self._emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         finally:
             self._finish(status)

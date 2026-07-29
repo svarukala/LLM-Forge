@@ -64,6 +64,11 @@
         <p class="hint">Live progress of whichever job is running (pre-training or fine-tuning).</p>
         <button id="btn-stop" class="danger">Stop training</button>
       </div>
+      <div id="error-banner" class="error-banner" hidden>
+        <strong>Something went wrong.</strong>
+        <span id="error-message"></span>
+        <small>Full details were also printed in the terminal where you ran <code>serve</code>.</small>
+      </div>
       <div class="stats">
         <div><span class="k">status</span><span id="stat-status" class="v">idle</span></div>
         <div><span class="k">step</span><span id="stat-step" class="v">—</span></div>
