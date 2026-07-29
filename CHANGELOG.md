@@ -6,7 +6,22 @@ All notable changes to LLM Forge are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+- **Dashboard dataset paths are sandboxed**: `/api/pretrain` and `/api/finetune` now reject
+  any `data` path outside the bundled `data/sample/` directory or `runs/uploads/` (HTTP 422),
+  so a browser client can no longer make the server train on arbitrary files.
+- **Safe resume loading**: `train_state.pt` is loaded with `torch.load(weights_only=True)`,
+  so resuming a checkpoint can never execute arbitrary code. RNG state is serialized as plain
+  tensors/lists to keep the file pickle-free.
+- **Guarded legacy migration**: migrating a pre-v2 checkpoint refuses to copy a tokenizer
+  from a path that escapes the checkpoint directory unless migration is explicitly trusted.
+- **Aligned sampling validation**: the chat API rejects `temperature <= 0`, `top_k < 1`, and
+  `top_p` outside `(0, 1]` with a 422 instead of failing later inside the model.
+
 ### Added
+- **Hardened `--resume`**: verifies model block size, vocabulary size, tokenizer kind, and
+  corpus fingerprint before resuming, and persists/restores the dataset-local RNG so resumed
+  training is reproducible (a 5+5 resumed run matches a straight 10-step run).
 - **Resume support**: `pretrain --resume` restores optimizer state, step position, and RNG
   state from a separate `train_state.pt` file (model weights stay in safetensors).
 - **`checkpoint-info` command**: prints schema version, model dimensions, tokenizer info,

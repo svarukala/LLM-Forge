@@ -81,16 +81,31 @@ def save_checkpoint(
         torch.save(train_state, os.path.join(out_dir, TRAIN_STATE_FILENAME))
 
 
-def _maybe_migrate_legacy(out_dir: str, config: dict) -> dict:
+def _maybe_migrate_legacy(out_dir: str, config: dict, trust_migration: bool = False) -> dict:
     """Upgrade a pre-v2 checkpoint in place: pull an externally-referenced tokenizer inside
     the checkpoint directory and stamp the current schema version. Safe to call repeatedly.
+
+    Security: the legacy tokenizer path is *untrusted* metadata. Before reading/copying it we
+    verify it resolves **inside** the checkpoint directory. A legacy path that is absolute or
+    escapes via ``..`` is refused unless ``trust_migration=True`` is explicitly passed, so a
+    malicious config can never make us read an arbitrary server file.
     """
     if config.get("schema_version", 1) >= SCHEMA_VERSION:
         return config
     tok_rel = config.get("tokenizer")
     new_tok_rel = tok_rel
     if tok_rel:
-        legacy_src = os.path.normpath(os.path.join(out_dir, tok_rel))
+        legacy_src = os.path.abspath(os.path.join(out_dir, tok_rel))
+        root = os.path.abspath(out_dir)
+        contained = os.path.isabs(tok_rel) is False and (
+            legacy_src == root or os.path.commonpath([legacy_src, root]) == root
+        )
+        if not contained and not trust_migration:
+            raise ValueError(
+                f"Refusing to migrate legacy checkpoint {out_dir}: its tokenizer path "
+                f"{tok_rel!r} points outside the checkpoint directory. If you trust this "
+                f"checkpoint's source, re-run with trusted migration enabled."
+            )
         local = os.path.join(out_dir, TOKENIZER_FILENAME)
         if not os.path.exists(local) and os.path.exists(legacy_src):
             with open(legacy_src, "rb") as s, open(local, "wb") as d:
@@ -139,14 +154,14 @@ def _validate_config(out_dir: str, config: dict) -> None:
             )
 
 
-def load_checkpoint(out_dir: str, device: str = "cpu"):
+def load_checkpoint(out_dir: str, device: str = "cpu", trust_migration: bool = False):
     """Return (model, tokenizer_path, config_dict) after validating the checkpoint."""
     cfg_path = os.path.join(out_dir, "config.json")
     if not os.path.exists(cfg_path):
         raise FileNotFoundError(f"No checkpoint at {out_dir} (missing config.json)")
     with open(cfg_path, encoding="utf-8") as f:
         config = json.load(f)
-    config = _maybe_migrate_legacy(out_dir, config)
+    config = _maybe_migrate_legacy(out_dir, config, trust_migration=trust_migration)
     _validate_config(out_dir, config)
 
     cfg = ModelConfig(**config["model"])
@@ -161,18 +176,23 @@ def load_checkpoint(out_dir: str, device: str = "cpu"):
 
 
 def load_train_state(out_dir: str) -> dict | None:
-    """Load optimizer/step/RNG state for resuming, or None if this checkpoint has none."""
+    """Load optimizer/step/RNG state for resuming, or None if this checkpoint has none.
+
+    Loaded with ``weights_only=True`` so a checkpoint can never execute arbitrary code on
+    resume: everything we save (optimizer tensors, ints, RNG tensors/lists) is a plain
+    tensor or primitive container, so no pickled classes are needed. See SECURITY.md.
+    """
     p = os.path.join(out_dir, TRAIN_STATE_FILENAME)
     if not os.path.exists(p):
         return None
-    return torch.load(p, map_location="cpu", weights_only=False)
+    return torch.load(p, map_location="cpu", weights_only=True)
 
 
-def checkpoint_info(out_dir: str) -> dict:
+def checkpoint_info(out_dir: str, trust_migration: bool = False) -> dict:
     """Return a human-friendly summary of a checkpoint (used by the checkpoint-info CLI)."""
     with open(os.path.join(out_dir, "config.json"), encoding="utf-8") as f:
         config = json.load(f)
-    config = _maybe_migrate_legacy(out_dir, config)
+    config = _maybe_migrate_legacy(out_dir, config, trust_migration=trust_migration)
     _validate_config(out_dir, config)
     info = {
         "path": out_dir,

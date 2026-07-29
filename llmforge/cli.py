@@ -35,8 +35,8 @@ def _validate_sampling(
         raise SystemExit("error: --max-new-tokens must be >= 1")
     if temperature <= 0:
         raise SystemExit("error: --temperature must be > 0")
-    if top_k is not None and top_k < 0:
-        raise SystemExit("error: --top-k must be >= 0")
+    if top_k is not None and top_k < 1:
+        raise SystemExit("error: --top-k must be >= 1")
     if top_p is not None and not (0.0 < top_p <= 1.0):
         raise SystemExit("error: --top-p must be in (0, 1]")
 
@@ -172,6 +172,38 @@ def cmd_checkpoint_info(args: argparse.Namespace) -> None:
     print(json.dumps(info, indent=2))
 
 
+def _verify_resume_compat(model, tokenizer, text, ck_cfg) -> None:
+    """Refuse to resume when the checkpoint, tokenizer, and corpus don't line up.
+
+    Resuming only makes sense if we continue the *same* run: same model dimensions, same
+    tokenizer, same data. Mismatches would either crash (shape errors) or silently produce a
+    non-reproducible, meaningless "resume", so we fail fast with an actionable message.
+    """
+    from .tokenizer import text_fingerprint
+
+    meta = ck_cfg.get("meta", {})
+    if model.cfg.vocab_size != tokenizer.vocab_size:
+        raise SystemExit(
+            f"error: cannot resume -- checkpoint vocab_size={model.cfg.vocab_size} but the "
+            f"current tokenizer has vocab_size={tokenizer.vocab_size}. Use the tokenizer/corpus "
+            f"the checkpoint was trained with."
+        )
+    stored_kind = meta.get("tokenizer_kind")
+    if stored_kind and stored_kind != tokenizer.kind:
+        raise SystemExit(
+            f"error: cannot resume -- checkpoint tokenizer kind={stored_kind} but current "
+            f"kind={tokenizer.kind}."
+        )
+    stored_fp = meta.get("corpus_fingerprint")
+    cur_fp = text_fingerprint(text)
+    if stored_fp and stored_fp != cur_fp:
+        raise SystemExit(
+            f"error: cannot resume -- corpus fingerprint changed (checkpoint {stored_fp} != "
+            f"current {cur_fp}). Resuming on different data is not reproducible; pass the "
+            f"original --data, or drop --resume to start a fresh run."
+        )
+
+
 def cmd_pretrain(args: argparse.Namespace) -> None:
     from .config import pick_device
     from .data import PretrainData, load_text_file
@@ -190,32 +222,42 @@ def cmd_pretrain(args: argparse.Namespace) -> None:
 
     device = pick_device(args.device)
     ids = tokenizer.encode(text)
-    try:
-        dataset = PretrainData(ids, block_size=args.block_size, device=device, seed=args.seed)
-    except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from exc
 
     resume_dir = args.out if getattr(args, "resume", False) else None
     if resume_dir and os.path.exists(os.path.join(resume_dir, "config.json")):
         from .checkpoint import load_checkpoint
 
-        model, _, _ = load_checkpoint(resume_dir, device=device)
+        model, _, ck_cfg = load_checkpoint(resume_dir, device=device)
+        _verify_resume_compat(model, tokenizer, text, ck_cfg)
+        block_size = model.cfg.block_size
+        if args.block_size and args.block_size != block_size:
+            print(
+                f"note: ignoring --block-size {args.block_size}; resuming with the checkpoint's "
+                f"block_size={block_size}."
+            )
         print(f"Resuming from {resume_dir}")
     else:
         resume_dir = None
+        block_size = args.block_size
         mcfg = ModelConfig(
             vocab_size=tokenizer.vocab_size,
-            block_size=args.block_size,
+            block_size=block_size,
             n_layer=args.n_layer,
             n_head=args.n_head,
             n_embd=args.n_embd,
         )
         model = GPT(mcfg)
+
+    try:
+        dataset = PretrainData(ids, block_size=block_size, device=device, seed=args.seed)
+    except ValueError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
     print(f"Model: {model.num_params()/1e6:.2f}M params on {device}")
 
     tcfg = TrainConfig(
         batch_size=args.batch_size,
-        block_size=args.block_size,
+        block_size=block_size,
         steps=args.steps,
         eval_interval=args.eval_interval,
         learning_rate=args.lr,

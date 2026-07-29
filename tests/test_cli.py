@@ -94,6 +94,92 @@ def test_resume_continues_from_saved_step(tmp_path):
     assert r2["completed_steps"] == 10
 
 
+def _run(steps, out, tok, tok_path, resume_dir=None, model=None):
+    ds = _dataset(tok)
+    if model is None:
+        model = tiny_model(tok)
+    cfg = TrainConfig(
+        batch_size=8,
+        block_size=32,
+        steps=steps,
+        eval_interval=5,
+        eval_iters=2,
+        sample_every=0,
+        device="cpu",
+        out_dir=out,
+    )
+    return train(model, ds, cfg, tokenizer=tok, tokenizer_path=tok_path, resume_dir=resume_dir)
+
+
+def test_resume_is_reproducible(tmp_path):
+    """5+5 resumed training reaches the same loss as a straight 10-step run.
+
+    This only holds if the optimizer state AND both the global and dataset-local RNG states
+    are persisted and restored across the resume boundary.
+    """
+    import pytest
+
+    from llmforge.checkpoint import load_checkpoint
+
+    tok = make_char_tokenizer()
+    tok_path = os.path.join(str(tmp_path), "tok.json")
+    tok.save(tok_path)
+
+    straight = _run(10, os.path.join(str(tmp_path), "straight"), tok, tok_path)
+
+    part = os.path.join(str(tmp_path), "part")
+    _run(5, part, tok, tok_path)
+    model2, _, _ = load_checkpoint(part, device="cpu")
+    resumed = _run(10, part, tok, tok_path, resume_dir=part, model=model2)
+
+    assert resumed["completed_steps"] == 10
+    assert resumed["final_loss"] == pytest.approx(straight["final_loss"], abs=1e-4)
+
+
+def test_train_state_loads_without_pickle(tmp_path):
+    """Resume state must be loadable with weights_only=True (no arbitrary code execution)."""
+    from llmforge.checkpoint import load_train_state
+
+    tok = make_char_tokenizer()
+    tok_path = os.path.join(str(tmp_path), "tok.json")
+    tok.save(tok_path)
+    out = os.path.join(str(tmp_path), "base")
+    _run(4, out, tok, tok_path)
+    state = load_train_state(out)  # uses weights_only=True internally
+    assert state["step"] == 4
+    assert "optimizer" in state and "rng" in state
+
+
+def test_verify_resume_rejects_incompatible():
+    from llmforge.cli import _verify_resume_compat
+    from llmforge.tokenizer import text_fingerprint
+
+    tok = make_char_tokenizer()
+    model = tiny_model(tok)
+
+    # corpus fingerprint mismatch -> refuse
+    ck_cfg = {"meta": {"tokenizer_kind": "char", "corpus_fingerprint": text_fingerprint("other")}}
+    try:
+        _verify_resume_compat(model, tok, TINY_CORPUS, ck_cfg)
+        raise AssertionError("expected SystemExit on corpus mismatch")
+    except SystemExit:
+        pass
+
+    # vocab mismatch -> refuse (model vocab differs from a bigger tokenizer)
+    bigger = make_char_tokenizer(TINY_CORPUS + "ZQXJ" * 3)
+    ok_cfg = {
+        "meta": {
+            "tokenizer_kind": "char",
+            "corpus_fingerprint": text_fingerprint(TINY_CORPUS + "ZQXJ" * 3),
+        }
+    }
+    try:
+        _verify_resume_compat(model, bigger, TINY_CORPUS + "ZQXJ" * 3, ok_cfg)
+        raise AssertionError("expected SystemExit on vocab mismatch")
+    except SystemExit:
+        pass
+
+
 def test_tokenizer_meta_detects_incompatibility(tmp_path):
     tok = train_tokenizer(TINY_CORPUS, kind="char")
     tok_path = os.path.join(str(tmp_path), "tok.json")

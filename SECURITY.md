@@ -29,16 +29,25 @@ Even locally, the dashboard validates and constrains inputs so a mistake can't r
 - All training/generation parameters have strict min/max bounds (Pydantic request models).
 - Uploaded datasets are capped in size and written only under `runs/uploads/`, with filenames
   sanitized to block path traversal (`..`, absolute paths, separators are rejected).
+- Training dataset paths supplied to the dashboard are restricted to bundled samples
+  (`data/sample/`) or uploaded files (`runs/uploads/`); any other path is rejected (HTTP 422),
+  so a browser client cannot make the server train on arbitrary files.
 - Chat/finetune checkpoint paths are constrained to live inside the `runs/` directory.
 - Only one training job runs at a time; concurrent job requests are rejected.
 
-## Checkpoints are self-contained
+## Checkpoints are self-contained and load safely
 
 Each checkpoint stores its own tokenizer inside the checkpoint directory and records a schema
 version, model dimensions, and dataset/tokenizer fingerprints. Loading validates these and
-refuses tokenizer paths that escape the checkpoint directory. Still, **only load checkpoints
-from sources you trust** — `train_state.pt` is a pickled PyTorch file (like any model
-artifact) and should be treated with the same caution as any downloaded code.
+refuses tokenizer paths that escape the checkpoint directory. Migrating an old (pre-v2)
+checkpoint refuses to copy a tokenizer from outside the checkpoint directory unless migration
+is explicitly trusted.
+
+Model weights are stored as **safetensors** (a non-executable tensor format). The optional
+resume file (`train_state.pt`) is loaded with `torch.load(..., weights_only=True)`, so
+resuming **cannot execute arbitrary code**, even from an untrusted checkpoint — everything it
+contains is a plain tensor or primitive container (optimizer tensors, step counts, RNG
+state). As always, prefer checkpoints from sources you trust.
 
 ## Reporting a vulnerability
 

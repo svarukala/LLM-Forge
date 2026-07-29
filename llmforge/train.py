@@ -57,11 +57,21 @@ def _estimate_loss(model: GPT, dataset, cfg: TrainConfig) -> dict:
 
 
 def _rng_state() -> dict:
-    state = {"python": random.getstate(), "torch": torch.get_rng_state()}
+    # Keep every value here restorable WITHOUT pickle (see load_train_state's weights_only
+    # load): torch RNG state is a ByteTensor, Python's is a tuple of ints, and NumPy's array
+    # is converted to a plain list so nothing requires arbitrary class reconstruction.
+    state: dict = {"python": random.getstate(), "torch": torch.get_rng_state()}
     try:
         import numpy as np
 
-        state["numpy"] = np.random.get_state()
+        np_state: tuple = tuple(np.random.get_state(legacy=True))
+        arr = np.asarray(np_state[1], dtype=np.uint32).tolist()
+        state["numpy"] = {
+            "keys": arr,
+            "pos": int(np_state[2]),
+            "has_gauss": int(np_state[3]),
+            "cached": float(np_state[4]),
+        }
     except ImportError:
         pass
     return state
@@ -71,16 +81,39 @@ def _restore_rng_state(state: dict) -> None:
     if not state:
         return
     if "python" in state:
-        random.setstate(state["python"])
+        # torch.load may return the inner tuple as a list; random.setstate needs tuples.
+        py = state["python"]
+        if isinstance(py, list):
+            py = (py[0], tuple(py[1]), py[2])
+        random.setstate(py)
     if "torch" in state:
         torch.set_rng_state(state["torch"])
     if "numpy" in state:
         try:
             import numpy as np
 
-            np.random.set_state(state["numpy"])
+            np_state = state["numpy"]
+            keys = np.array(np_state["keys"], dtype=np.uint32)
+            np.random.set_state(
+                ("MT19937", keys, np_state["pos"], np_state["has_gauss"], np_state["cached"])
+            )
         except ImportError:
             pass
+
+
+def _dataset_rng_state(dataset) -> dict | None:
+    """Snapshot a dataset's own RNG so a resumed run draws the same future batches."""
+    fn = getattr(dataset, "rng_state", None)
+    if callable(fn):
+        result = fn()
+        return result if isinstance(result, dict) else None
+    return None
+
+
+def _restore_dataset_rng(dataset, state) -> None:
+    fn = getattr(dataset, "set_rng_state", None)
+    if callable(fn) and state:
+        fn(state)
 
 
 def train(
@@ -118,6 +151,7 @@ def train(
             optimizer.load_state_dict(state["optimizer"])
             start_step = int(state.get("step", 0))
             _restore_rng_state(state.get("rng", {}))
+            _restore_dataset_rng(dataset, state.get("dataset_rng"))
 
     use_amp = bool(cfg.amp and device == "cuda")
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
@@ -152,6 +186,7 @@ def train(
             "optimizer": optimizer.state_dict(),
             "step": completed_steps,
             "rng": _rng_state(),
+            "dataset_rng": _dataset_rng_state(dataset),
         }
         save_checkpoint(cfg.out_dir, model, tokenizer_path, meta=meta, train_state=train_state)
 

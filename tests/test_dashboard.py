@@ -1,8 +1,11 @@
 """Dashboard API: request validation, upload guards, concurrency, SSE fan-out, cache."""
 
+import os
+
+import pytest
 from fastapi.testclient import TestClient
 
-from llmforge.server.app import TrainingManager, create_app
+from llmforge.server.app import TrainingManager, _safe_data_path, create_app
 
 
 def client():
@@ -40,6 +43,47 @@ def test_chat_rejects_path_traversal():
     c = client()
     r = c.post("/api/chat", json={"checkpoint": "../../etc/passwd", "message": "hi"})
     assert r.status_code == 422
+
+
+def test_chat_rejects_out_of_range_sampling():
+    """API sampling bounds must mirror GPT.generate() so bad values 422 instead of crashing."""
+    c = client()
+    assert c.post("/api/chat", json={"message": "hi", "temperature": 0}).status_code == 422
+    assert c.post("/api/chat", json={"message": "hi", "top_k": 0}).status_code == 422
+    assert c.post("/api/chat", json={"message": "hi", "top_p": 0}).status_code == 422
+    assert c.post("/api/chat", json={"message": "hi", "top_p": 1.5}).status_code == 422
+
+
+def test_pretrain_rejects_arbitrary_data_path(tmp_path):
+    c = client()
+    for bad in ("/etc/passwd", "..\\..\\secrets.txt", "C:\\Windows\\win.ini", "runs\\base"):
+        r = c.post("/api/pretrain", json={"data": bad, "steps": 5})
+        assert r.status_code == 422, bad
+
+
+def test_finetune_rejects_arbitrary_data_path():
+    c = client()
+    for bad in ("/etc/passwd", "../../secrets.jsonl", "runs\\chat\\config.json"):
+        r = c.post("/api/finetune", json={"data": bad, "steps": 5})
+        assert r.status_code == 422, bad
+
+
+def test_safe_data_path_accepts_sample_and_uploads():
+    import os
+
+    from llmforge.config import RUNS_DIR
+
+    ok_sample = _safe_data_path(os.path.join("data", "sample", "corpus.txt"))
+    assert ok_sample.endswith(os.path.join("data", "sample", "corpus.txt"))
+    ok_upload = _safe_data_path(os.path.join(RUNS_DIR, "uploads", "mine.txt"))
+    assert ok_upload.endswith(os.path.join("uploads", "mine.txt"))
+
+
+def test_safe_data_path_rejects_outside():
+    with pytest.raises(ValueError):
+        _safe_data_path(os.path.join("data", "secret.txt"))
+    with pytest.raises(ValueError):
+        _safe_data_path(os.path.join("runs", "base", "config.json"))
 
 
 def test_concurrent_job_rejected():

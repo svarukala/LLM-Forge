@@ -62,6 +62,14 @@ class PretrainData:
         y = torch.stack([source[i + 1 : i + 1 + self.block_size] for i in ix])
         return x.to(self.device), y.to(self.device)
 
+    def rng_state(self) -> dict:
+        """Snapshot the sampling generator so a resumed run continues the same batch order."""
+        return {"torch_gen": self._gen.get_state()}
+
+    def set_rng_state(self, state: dict) -> None:
+        if state and "torch_gen" in state:
+            self._gen.set_state(state["torch_gen"])
+
 
 def _format_example(
     tokenizer, prompt: str, response: str, block_size: int
@@ -193,6 +201,17 @@ class SFTData:
         x = torch.tensor(xs, dtype=torch.long, device=self.device)
         y = torch.tensor(ys, dtype=torch.long, device=self.device)
         return x, y
+
+    def rng_state(self) -> dict:
+        """Snapshot the example-sampling RNG so a resumed run picks the same examples."""
+        return {"py_rng": self._rng.getstate()}
+
+    def set_rng_state(self, state: dict) -> None:
+        if state and "py_rng" in state:
+            py = state["py_rng"]
+            if isinstance(py, list):  # torch.load may hand tuples back as lists
+                py = (py[0], tuple(py[1]), py[2])
+            self._rng.setstate(py)
 
 
 def _safe_pad_id(tokenizer) -> int:

@@ -18,35 +18,48 @@ No cloud. No accounts. No magic. Everything runs locally on your machine.
 ## Why this exists
 
 The fastest way to demystify "AI magic" is to build a small version yourself. This repo
-is meant to be **run by everyone on the team**: clone it, run it, and come away with the
-same mental model of what pre-training and fine-tuning actually *do*.
+is meant to be **run by everyone** — clone it, run it, and come away with a real mental
+model of what pre-training and fine-tuning actually *do*.
 
-There are three layers, so people can go as deep as they want:
+Under the hood there's one **engine** (the actual model, built with PyTorch — the same
+toolkit used by real AI labs). On top of that engine there are **three ways to experience
+it**, so you can pick based on how you like to learn — you don't need all three:
 
-| Layer | Who it's for | Needs |
-|-------|-------------|-------|
-| 🟢 **Playground** | Total beginners | Nothing but Python — runs in seconds |
-| 🟡 **Pipeline** | Builders | `pip install -r requirements.txt` (PyTorch) |
-| 🔵 **Dashboard** | Visual learners / demos | Same, plus a browser |
+| Way in | Best for | What it is | Command line? |
+|--------|----------|-----------|---------------|
+| 👀 **Watch it learn** | The curious | A 10-second demo that trains a mini model and prints text getting less random | One command, then just watch |
+| 🖱️ **Web dashboard** | Visual learners & beginners | A browser page with **Pre-train → Fine-tune → Chat** buttons and a live loss chart | **No — buttons only** |
+| ⌨️ **Step-by-step CLI** | Tinkerers | Run each stage yourself (tokenizer, pre-train, fine-tune, chat) to see the moving parts | Yes |
+
+> **New here? Start with the web dashboard.** It's the whole journey — click a button,
+> watch the model learn on a live chart, then chat with what you made. No coding required.
+> The demo and the CLI are there if you want to peek deeper.
+
+Everything sits on the same engine, so a model you train in the dashboard behaves exactly
+like one you train from the command line.
 
 ---
 
-## 🟢 Layer 1: The 60-second playground (zero dependencies)
+## 👀 Watch it learn (10 seconds, nothing to install)
 
-See a model *learn* right now, with nothing installed but Python:
+The simplest possible taste — see a model *learn* right now with nothing but Python
+installed:
 
 ```powershell
 python -m llmforge.playground
 ```
 
-This trains a tiny character-level model in pure Python on a sample corpus and prints
-text getting less random every few steps. It's the "aha" moment — no GPU, no libraries.
+This trains a tiny model on a sample text and prints its output getting less random every
+few steps. No AI toolkit, no GPU, no setup. It's the "wait… it's actually learning" moment.
 
 ---
 
-## 🟡 Layer 2: The real pipeline (PyTorch)
+## 🖱️ The web dashboard (recommended for beginners)
 
-Install once:
+If you'd rather *see* everything in a browser than type commands, this is your path — and
+you can do the **entire** journey here without ever touching the command line.
+
+One-time setup (installs the AI engine, PyTorch):
 
 ```powershell
 python -m venv .venv
@@ -54,19 +67,40 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Then walk the full pipeline with the CLI:
+Then launch it:
 
 ```powershell
-# 1. Train a tokenizer on your data (BPE)
+python -m llmforge.cli serve
+# open http://localhost:8000 in your browser
+```
+
+In the page you can: see a **hardware banner** that detects your computer and picks sensible
+settings, optionally **upload your own text**, then click **Pre-train → Fine-tune → Chat**
+in that order while a **live chart** shows the model improving. That's the full lifecycle,
+buttons only. Perfect for a lunch-and-learn or a first look.
+
+> ⚠️ **Security:** the dashboard has **no login** and is only reachable from your own
+> computer by default. Don't expose it to a network you don't trust — see
+> [`SECURITY.md`](SECURITY.md). (It refuses to go public unless you explicitly force it.)
+
+---
+
+## ⌨️ The step-by-step CLI (see every moving part)
+
+Prefer the command line, or want to watch each stage happen on its own? After the same
+one-time setup above, walk the full pipeline yourself:
+
+```powershell
+# 1. Train a tokenizer on your data (turns text into numbers the model can read)
 python -m llmforge.cli tokenizer --input data/sample/corpus.txt --vocab-size 2048
 
-# 2. Pre-train a GPT from scratch
+# 2. Pre-train a model from scratch (it starts knowing nothing)
 python -m llmforge.cli pretrain --data data/sample/corpus.txt --steps 500
 
-# 3. Sample from the base model
+# 3. Sample from the base model (see what it writes so far)
 python -m llmforge.cli sample --prompt "Once upon a time"
 
-# 4. Fine-tune it to follow instructions (SFT)
+# 4. Fine-tune it to follow instructions
 python -m llmforge.cli finetune --data data/sample/chat.jsonl --steps 300
 
 # 5. Chat with the model you made
@@ -241,18 +275,13 @@ python -m llmforge.cli smoke
 ---
 
 
+### More on the web dashboard
 
-```powershell
-python -m llmforge.cli serve
-# open http://localhost:8000
-```
-
-Launch training runs, watch the loss curve live, and chat — all from the browser. It's
-fully self-serve: a **hardware banner** up top detects your CPU/GPU and pre-selects the
-right **preset**, you can **upload your own corpus** (`.txt`) for pre-training and your own
-**chat pairs** (`.jsonl`) for fine-tuning, pick the tokenizer (char/BPE) from a dropdown,
-and click **Pre-train → Fine-tune → Chat** in that order. No CLI steps required. Great
-for a lunch-and-learn or a team demo.
+The dashboard (`python -m llmforge.cli serve`, then open http://localhost:8000) is covered
+in [the beginner section above](#️-the-web-dashboard-recommended-for-beginners). A few extra
+notes for when you dig in: you can **upload your own corpus** (`.txt`) for pre-training and
+your own **chat pairs** (`.jsonl`) for fine-tuning, and pick the tokenizer (char/BPE) from a
+dropdown. Everything the CLI does is available as a button.
 
 > ⚠️ **Security:** the dashboard has **no authentication** and binds to `localhost` only by
 > default. It will refuse to bind to a public interface unless you pass `--allow-public`
@@ -278,8 +307,8 @@ implements the idea:
 ## Requirements & hardware
 
 - **Python 3.10+**
-- **Layer 1 (playground):** nothing else — pure standard library.
-- **Layer 2/3:** PyTorch. CPU works for the `cpu` preset; an NVIDIA **CUDA** GPU is strongly
+- **Watch it learn (playground):** nothing else — pure standard library.
+- **Dashboard & CLI:** PyTorch. CPU works for the `cpu` preset; an NVIDIA **CUDA** GPU is strongly
   recommended for the `gpu`/`gpu-large` presets. Apple Silicon (**MPS**) works for CPU-class
   sizes.
 

@@ -81,12 +81,29 @@ def test_checkpoint_info_non_resumable(tmp_path):
 
 
 def test_legacy_checkpoint_migrates(tmp_path):
-    # simulate a pre-v2 checkpoint with an external tokenizer reference
+    # simulate a pre-v2 checkpoint whose tokenizer lives inside the checkpoint under an old name
     out, _ = _save_tiny(tmp_path)
-    # move tokenizer up one level and rewrite config to legacy form
     inside = os.path.join(out, "tokenizer.json")
+    legacy = os.path.join(out, "legacy_tok.json")
+    os.replace(inside, legacy)
+    cfg_path = os.path.join(out, "config.json")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg.pop("schema_version", None)
+    cfg["tokenizer"] = "legacy_tok.json"  # contained (no traversal)
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+    # loading should auto-migrate: pull tokenizer to the standard name + bump schema
+    model, tok_path, cfg2 = load_checkpoint(out, device="cpu")
+    assert cfg2["schema_version"] >= 2
+    assert os.path.dirname(os.path.abspath(tok_path)) == os.path.abspath(out)
+
+
+def test_legacy_external_tokenizer_rejected_by_default(tmp_path):
+    # a legacy config that points its tokenizer OUTSIDE the checkpoint must be refused
+    out, _ = _save_tiny(tmp_path)
     external = os.path.join(str(tmp_path), "tokenizer_legacy.json")
-    os.replace(inside, external)
+    os.replace(os.path.join(out, "tokenizer.json"), external)
     cfg_path = os.path.join(out, "config.json")
     with open(cfg_path, encoding="utf-8") as f:
         cfg = json.load(f)
@@ -94,7 +111,22 @@ def test_legacy_checkpoint_migrates(tmp_path):
     cfg["tokenizer"] = os.path.join("..", "tokenizer_legacy.json")
     with open(cfg_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
-    # loading should auto-migrate: pull tokenizer inside + bump schema
-    model, tok_path, cfg2 = load_checkpoint(out, device="cpu")
+    with pytest.raises(ValueError):
+        load_checkpoint(out, device="cpu")
+
+
+def test_legacy_external_tokenizer_migrates_when_trusted(tmp_path):
+    # the same escaping legacy layout migrates only when trust_migration is explicit
+    out, _ = _save_tiny(tmp_path)
+    external = os.path.join(str(tmp_path), "tokenizer_legacy.json")
+    os.replace(os.path.join(out, "tokenizer.json"), external)
+    cfg_path = os.path.join(out, "config.json")
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg.pop("schema_version", None)
+    cfg["tokenizer"] = os.path.join("..", "tokenizer_legacy.json")
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+    model, tok_path, cfg2 = load_checkpoint(out, device="cpu", trust_migration=True)
     assert cfg2["schema_version"] >= 2
     assert os.path.dirname(os.path.abspath(tok_path)) == os.path.abspath(out)

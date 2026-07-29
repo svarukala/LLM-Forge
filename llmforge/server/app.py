@@ -1,4 +1,4 @@
-"""LLM Forge web dashboard (Layer 3).
+"""LLM Forge web dashboard.
 
 A small FastAPI app that lets you launch pre-training / fine-tuning runs, watch the loss
 curve and samples stream in live, and chat with the model — all from the browser.
@@ -29,6 +29,7 @@ from ..train import train
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB is plenty for an educational corpus
 _VALID_PRESETS = {"cpu", "gpu", "gpu-large"}
+SAMPLE_DIR = os.path.join("data", "sample")  # bundled example datasets
 
 
 class PretrainRequest(BaseModel):
@@ -98,9 +99,11 @@ class ChatRequest(BaseModel):
     checkpoint: str | None = None
     message: str = Field(default="", max_length=8000)
     max_new_tokens: int = Field(default=200, ge=1, le=2000)
-    temperature: float = Field(default=0.8, ge=0.0, le=5.0)
-    top_k: int | None = Field(default=40, ge=0, le=100000)
-    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    # These bounds mirror GPT.generate()'s own validation so bad values are rejected with a
+    # 422 at the API boundary instead of blowing up inside the model at generation time.
+    temperature: float = Field(default=0.8, gt=0.0, le=5.0)
+    top_k: int | None = Field(default=40, ge=1, le=100000)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
 
 
 def _resolve_preset(params: dict, stage: str) -> dict:
@@ -155,6 +158,33 @@ def _under_runs(path: str) -> str:
         rel = os.path.relpath(os.path.abspath(path), os.path.abspath(RUNS_DIR))
         return _safe_run_path(rel)
     return _safe_run_path(path)
+
+
+def _safe_data_path(path: str) -> str:
+    """Restrict a browser-supplied dataset path to trusted locations.
+
+    A dashboard client must never be able to point training at an arbitrary server file.
+    Only two roots are allowed: the bundled ``data/sample`` datasets and user uploads under
+    ``runs/uploads`` (which the /api/upload endpoint writes with sanitized filenames). The
+    path may arrive relative or absolute (uploads echo back an absolute path), but it must
+    resolve *inside* one of those roots. Absolute paths elsewhere, ``..`` traversal, and any
+    other location raise ValueError, which the endpoints translate to HTTP 422.
+    """
+    candidate = os.path.abspath(path)
+    allowed_roots = [
+        os.path.abspath(SAMPLE_DIR),
+        os.path.abspath(os.path.join(RUNS_DIR, "uploads")),
+    ]
+    for root in allowed_roots:
+        try:
+            if candidate != root and os.path.commonpath([candidate, root]) == root:
+                return candidate
+        except ValueError:
+            continue  # e.g. different drive on Windows -> not under this root
+    raise ValueError(
+        "data path must be a bundled sample under data/sample/ or an uploaded file "
+        "under runs/uploads/"
+    )
 
 
 class TrainingManager:
@@ -469,7 +499,13 @@ def create_app():
             req = PretrainRequest(**await _json(request))
         except ValidationError as e:
             return JSONResponse({"error": json.loads(e.json())}, status_code=422)
-        job_id = manager.start_pretrain(req.model_dump())
+        params = req.model_dump()
+        if params.get("data"):
+            try:
+                params["data"] = _safe_data_path(params["data"])
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=422)
+        job_id = manager.start_pretrain(params)
         if job_id is None:
             return JSONResponse({"error": "A training job is already running."}, status_code=409)
         return JSONResponse({"started": True, "job_id": job_id})
@@ -480,7 +516,13 @@ def create_app():
             req = FinetuneRequest(**await _json(request))
         except ValidationError as e:
             return JSONResponse({"error": json.loads(e.json())}, status_code=422)
-        job_id = manager.start_finetune(req.model_dump())
+        params = req.model_dump()
+        if params.get("data"):
+            try:
+                params["data"] = _safe_data_path(params["data"])
+            except ValueError as e:
+                return JSONResponse({"error": str(e)}, status_code=422)
+        job_id = manager.start_finetune(params)
         if job_id is None:
             return JSONResponse({"error": "A training job is already running."}, status_code=409)
         return JSONResponse({"started": True, "job_id": job_id})
