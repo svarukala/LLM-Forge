@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 const lossPoints = [];   // {step, train, val}
 let PRESETS = {};        // filled from /api/hardware
+let totalSteps = 0;      // total steps for the running job (for the progress bar)
 
 function setStat(id, val) { $(id).textContent = val; }
 
@@ -94,6 +95,41 @@ function applyPreset(name) {
 
 $("preset").onchange = () => applyPreset($("preset").value);
 
+// ---- Training UI state (button locking + progress bar) ----
+function setTraining(running) {
+  // While a job runs, both "start" buttons are disabled so you can't launch a second one;
+  // the Stop button is only usable while something is actually running.
+  $("btn-pretrain").disabled = running;
+  $("btn-finetune").disabled = running;
+  $("btn-stop").disabled = !running;
+}
+
+function formatEta(sec) {
+  if (sec == null || !isFinite(sec) || sec < 0) return "—";
+  sec = Math.round(sec);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}m ${String(s).padStart(2, "0")}s`;
+}
+
+function showProgress(show) {
+  $("progress-wrap").hidden = !show;
+}
+
+function setProgress(step, total) {
+  const bar = $("progress-bar");
+  if (!total || total <= 0) {
+    // We don't know the length yet — show an animated indeterminate bar.
+    bar.classList.add("indeterminate");
+    $("progress-label").textContent = step ? `step ${step}` : "starting…";
+    return;
+  }
+  bar.classList.remove("indeterminate");
+  const pct = Math.max(0, Math.min(100, (step / total) * 100));
+  bar.style.width = `${pct}%`;
+  $("progress-label").textContent = `${Math.round(pct)}%  (${step}/${total})`;
+}
+
 // ---- Event stream ----
 function connectEvents() {
   const es = new EventSource("/api/events");
@@ -109,13 +145,20 @@ function handleEvent(evt) {
     case "start":
       setStat("stat-status", "training");
       setStat("stat-device", evt.device);
+      setStat("stat-eta", "—");
       lossPoints.length = 0;
       $("samples").textContent = "";
+      totalSteps = evt.steps || 0;
+      setTraining(true);
+      showProgress(true);
+      setProgress(evt.start_step || 0, totalSteps);
       break;
     case "step":
       setStat("stat-step", evt.step);
       setStat("stat-loss", evt.loss.toFixed(3));
       setStat("stat-tps", Math.round(evt.tok_per_sec));
+      setStat("stat-eta", formatEta(evt.eta_s));
+      setProgress(evt.step, totalSteps);
       pushPoint(evt.step, evt.loss, null);
       break;
     case "eval":
@@ -128,14 +171,23 @@ function handleEvent(evt) {
       break;
     case "done":
       setStat("stat-status", "done ✓");
+      setStat("stat-eta", "—");
+      setProgress(totalSteps, totalSteps);
+      setTraining(false);
       refreshStatus();
       break;
     case "stopped":
       setStat("stat-status", "stopped");
+      setStat("stat-eta", "—");
+      $("progress-bar").classList.remove("indeterminate");
+      setTraining(false);
       refreshStatus();
       break;
     case "error":
       setStat("stat-status", "error");
+      setStat("stat-eta", "—");
+      $("progress-bar").classList.remove("indeterminate");
+      setTraining(false);
       $("samples").textContent += `\n[ERROR] ${evt.message}\n`;
       break;
   }
@@ -202,8 +254,11 @@ $("btn-pretrain").onclick = async () => {
   const preset = $("preset").value;
   if (preset) body.preset = preset;
   if (uploadedCorpus) body.data = uploadedCorpus;
+  setTraining(true);                 // lock immediately so a fast double-click can't double-start
+  showProgress(true);
+  setProgress(0, +$("pt-steps").value);
   const r = await post("/api/pretrain", body);
-  if (r.status === 409) alert("A training job is already running.");
+  if (!r.ok) { await reportStartError(r); setTraining(false); }
 };
 
 $("btn-finetune").onclick = async () => {
@@ -211,9 +266,23 @@ $("btn-finetune").onclick = async () => {
   const preset = $("preset").value;
   if (preset) body.preset = preset;
   if (uploadedChat) body.data = uploadedChat;
+  setTraining(true);
+  showProgress(true);
+  setProgress(0, +$("ft-steps").value);
   const r = await post("/api/finetune", body);
-  if (r.status === 409) alert("A training job is already running.");
+  if (!r.ok) { await reportStartError(r); setTraining(false); }
 };
+
+async function reportStartError(r) {
+  showProgress(false);
+  if (r.status === 409) { alert("A training job is already running."); return; }
+  let detail = `Could not start (HTTP ${r.status}).`;
+  try {
+    const d = await r.json();
+    if (d && d.error) detail = typeof d.error === "string" ? d.error : JSON.stringify(d.error);
+  } catch {}
+  alert(detail);
+}
 
 $("btn-stop").onclick = () => post("/api/stop", {});
 
@@ -241,12 +310,20 @@ async function refreshStatus() {
   try {
     const r = await fetch("/api/status");
     const s = await r.json();
-    if (!s.running && $("stat-status").textContent === "idle") {
+    setTraining(s.running);
+    if (s.running) {
+      // A job is already in flight (e.g. after a page reload) — resync the progress bar.
+      setStat("stat-status", "training");
+      totalSteps = s.total_steps || totalSteps;
+      showProgress(true);
+      setProgress(s.current_step || 0, totalSteps);
+    } else if ($("stat-status").textContent === "idle") {
       setStat("stat-status", s.checkpoints.length ? "idle" : "no checkpoints yet");
     }
   } catch {}
 }
 
+setTraining(false);   // stop disabled until a job is actually running
 connectEvents();
 refreshStatus();
 loadHardware();

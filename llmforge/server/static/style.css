@@ -56,6 +56,30 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .stats .k { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
 .stats .v { font-size: 20px; font-variant-numeric: tabular-nums; }
 #loss-chart { width: 100%; height: 220px; background: var(--panel-2); border-radius: 10px; }
+.progress-wrap { display: flex; align-items: center; gap: 12px; margin: 4px 0 14px; }
+.progress-track {
+  flex: 1; height: 10px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; overflow: hidden;
+}
+.progress-bar {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 999px; transition: width .3s ease;
+}
+/* Indeterminate stripes while running but before the total is known */
+.progress-bar.indeterminate {
+  width: 35% !important;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: indeterminate 1.1s infinite linear;
+}
+@keyframes indeterminate {
+  0% { margin-left: -35%; }
+  100% { margin-left: 100%; }
+}
+.progress-label {
+  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+  min-width: 92px; text-align: right;
+}
 .samples {
   background: var(--panel-2); border-radius: 10px; padding: 12px; margin-top: 8px;
   max-height: 160px; overflow: auto; white-space: pre-wrap; color: var(--accent-2);
