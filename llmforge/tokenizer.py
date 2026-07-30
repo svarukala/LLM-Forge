@@ -114,6 +114,14 @@ class CharTokenizer:
             out.append("" if tok in SPECIAL_TOKENS else tok)
         return "".join(out)
 
+    def pieces(self, text: str) -> list[dict]:
+        """Return [{'id', 'piece'}] for each token, for the tokenizer playground."""
+        out = []
+        for i in self.encode(text):
+            piece = self.itos[i] if 0 <= i < len(self.itos) else ""
+            out.append({"id": i, "piece": piece})
+        return out
+
     def token_id(self, special: str) -> int:
         return self.stoi[special]
 
@@ -163,6 +171,19 @@ class BPETokenizer:
 
     def decode(self, ids: list[int]) -> str:
         return self._tk.decode(ids)
+
+    def pieces(self, text: str) -> list[dict]:
+        """Return [{'id', 'piece'}] for each token, for the tokenizer playground.
+
+        ByteLevel BPE marks a leading space as 'Ġ' and a newline as 'Ċ'; we translate those
+        back to a real space/newline so the chips read naturally.
+        """
+        enc = self._tk.encode(text)
+        out = []
+        for tid, tokstr in zip(enc.ids, enc.tokens, strict=True):
+            piece = tokstr.replace("\u0120", " ").replace("\u010a", "\n")
+            out.append({"id": tid, "piece": piece})
+        return out
 
     def token_id(self, special: str) -> int:
         tid = self._tk.token_to_id(special)

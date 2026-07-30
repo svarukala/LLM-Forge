@@ -112,6 +112,11 @@ function formatEta(sec) {
   return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
+function formatLr(lr) {
+  if (lr == null || !isFinite(lr)) return "—";
+  return lr.toExponential(1);  // e.g. 3.0e-4
+}
+
 function showProgress(show) {
   $("progress-wrap").hidden = !show;
 }
@@ -167,6 +172,8 @@ function handleEvent(evt) {
       setStat("stat-status", "training");
       setStat("stat-device", evt.device);
       setStat("stat-eta", "—");
+      setStat("stat-ppl", "—");
+      setStat("stat-lr", "—");
       hideError();
       lossPoints.length = 0;
       $("samples").textContent = "";
@@ -178,6 +185,8 @@ function handleEvent(evt) {
     case "step":
       setStat("stat-step", evt.step);
       setStat("stat-loss", evt.loss.toFixed(3));
+      if (evt.perplexity != null) setStat("stat-ppl", evt.perplexity.toFixed(1));
+      if (evt.lr != null) setStat("stat-lr", formatLr(evt.lr));
       setStat("stat-tps", Math.round(evt.tok_per_sec));
       setStat("stat-eta", formatEta(evt.eta_s));
       setProgress(evt.step, totalSteps);
@@ -185,6 +194,7 @@ function handleEvent(evt) {
       break;
     case "eval":
       setStat("stat-val", evt.val.toFixed(3));
+      if (evt.val_perplexity != null) setStat("stat-ppl", evt.val_perplexity.toFixed(1));
       pushPoint(evt.step, evt.train, evt.val);
       break;
     case "sample":
@@ -197,6 +207,7 @@ function handleEvent(evt) {
       setProgress(totalSteps, totalSteps);
       setTraining(false);
       refreshStatus();
+      refreshModels();
       break;
     case "stopped":
       setStat("stat-status", "stopped");
@@ -204,6 +215,7 @@ function handleEvent(evt) {
       $("progress-bar").classList.remove("indeterminate");
       setTraining(false);
       refreshStatus();
+      refreshModels();
       break;
     case "error":
       setStat("stat-status", "error");
@@ -325,10 +337,32 @@ $("chat-form").onsubmit = async (e) => {
   if (!msg) return;
   addMsg("you", msg);
   input.value = "";
-  const r = await post("/api/chat", { message: msg });
+  const body = { message: msg };
+  const temp = parseFloat($("chat-temp").value);
+  if (isFinite(temp) && temp > 0) body.temperature = temp;
+  const topk = parseInt($("chat-topk").value, 10);
+  if (Number.isInteger(topk) && topk >= 1) body.top_k = topk;
+  const topp = parseFloat($("chat-topp").value);
+  if (isFinite(topp) && topp > 0 && topp <= 1) body.top_p = topp;
+  const r = await post("/api/chat", body);
   const data = await r.json();
   addMsg("bot", r.ok ? (data.reply || "(no reply)") : (data.error || "error"));
+  if (r.ok && data.context) updateContext(data.context);
 };
+
+function updateContext(ctx) {
+  const block = ctx.block_size || 0;
+  const used = (ctx.prompt_tokens || 0) + (ctx.generated_tokens || 0);
+  if (!block) return;
+  const pct = Math.min(100, Math.round((used / block) * 100));
+  const wrap = $("chat-context");
+  const bar = $("context-bar");
+  bar.style.width = `${pct}%`;
+  bar.classList.toggle("full", pct >= 90);
+  $("context-label").textContent =
+    `context: ${used} / ${block} tokens (${pct}%) — prompt ${ctx.prompt_tokens}, reply ${ctx.generated_tokens}`;
+  wrap.hidden = false;
+}
 
 function addMsg(who, text) {
   const div = document.createElement("div");
@@ -359,7 +393,136 @@ async function refreshStatus() {
   } catch {}
 }
 
+// ---- Base-model sampling (#4) ----
+$("samp-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $("samp-btn");
+  const out = $("samp-output");
+  const body = {
+    prompt: $("samp-prompt").value,
+    max_new_tokens: +$("samp-len").value || 200,
+  };
+  const temp = parseFloat($("samp-temp").value);
+  if (isFinite(temp) && temp > 0) body.temperature = temp;
+  const topk = parseInt($("samp-topk").value, 10);
+  if (Number.isInteger(topk) && topk >= 1) body.top_k = topk;
+  const topp = parseFloat($("samp-topp").value);
+  if (isFinite(topp) && topp > 0 && topp <= 1) body.top_p = topp;
+  btn.disabled = true;
+  out.textContent = "Generating…";
+  try {
+    const r = await post("/api/sample", body);
+    const data = await r.json();
+    out.textContent = r.ok
+      ? (data.text || "(empty)")
+      : (typeof data.error === "string" ? data.error : JSON.stringify(data.error));
+  } catch {
+    out.textContent = "Request failed.";
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+// ---- Tokenizer playground (#9) ----
+let tokTimer = null;
+async function runTokenize() {
+  const text = $("tok-input").value;
+  const kind = $("tok-kind").value;
+  const r = await post("/api/tokenize", { text, kind });
+  const data = await r.json();
+  const out = $("tok-output");
+  out.innerHTML = "";
+  if (!r.ok) {
+    $("tok-count").textContent = "";
+    $("tok-source").textContent = "";
+    out.textContent = typeof data.error === "string" ? data.error : "Could not tokenize.";
+    return;
+  }
+  $("tok-source").textContent = data.source || "";
+  const chars = text.length;
+  $("tok-count").textContent =
+    `${data.count} tokens · ${chars} characters · ${(chars / Math.max(1, data.count)).toFixed(1)} chars/token · vocab ${data.vocab_size}`;
+  for (const t of data.tokens) {
+    const chip = document.createElement("span");
+    chip.className = "tok-chip";
+    const piece = document.createElement("span");
+    piece.className = "tok-piece";
+    piece.textContent = displayPiece(t.piece);
+    const id = document.createElement("span");
+    id.className = "tok-id";
+    id.textContent = t.id;
+    chip.append(piece, id);
+    out.appendChild(chip);
+  }
+}
+function displayPiece(p) {
+  if (p === " ") return "␣";
+  if (p === "\n") return "⏎";
+  return p.replace(/ /g, "␣").replace(/\n/g, "⏎");
+}
+function scheduleTokenize() {
+  clearTimeout(tokTimer);
+  tokTimer = setTimeout(runTokenize, 200);
+}
+$("tok-input").addEventListener("input", scheduleTokenize);
+$("tok-kind").addEventListener("change", runTokenize);
+
+// ---- Your models (checkpoint status strip) ----
+async function refreshModels() {
+  try {
+    const r = await fetch("/api/checkpoints");
+    const d = await r.json();
+    const byName = {};
+    for (const s of d.checkpoints || []) byName[s.name] = s;
+    renderStage("stage-base", "stage-base-detail", byName.base,
+      "Not yet — run Step 1 to create it.");
+    renderStage("stage-chat", "stage-chat-detail", byName.chat,
+      "Not yet — run Step 2 (needs a base first).");
+    // Any extra checkpoints beyond base/chat.
+    const extras = (d.checkpoints || []).filter(s => s.name !== "base" && s.name !== "chat");
+    const box = $("models-extra");
+    box.innerHTML = "";
+    if (extras.length) {
+      box.textContent = "Other checkpoints: " +
+        extras.map(s => `${s.name} (${describeModel(s)})`).join(", ");
+    }
+  } catch {}
+}
+
+function renderStage(stageId, detailId, s, missingText) {
+  const stage = $(stageId);
+  const detail = $(detailId);
+  if (s) {
+    stage.classList.add("ready");
+    stage.classList.remove("missing");
+    detail.textContent = `✓ ready — ${describeModel(s)}${formatWhen(s.modified)}`;
+    detail.title = `runs/${s.name}`;
+  } else {
+    stage.classList.add("missing");
+    stage.classList.remove("ready");
+    detail.textContent = missingText;
+    detail.title = "";
+  }
+}
+
+function describeModel(s) {
+  const parts = [];
+  if (s.n_layer != null && s.n_embd != null) parts.push(`${s.n_layer}×${s.n_embd}`);
+  if (s.tokenizer_kind) parts.push(s.tokenizer_kind);
+  if (s.steps != null) parts.push(`${s.steps} steps`);
+  if (s.final_loss != null) parts.push(`loss ${s.final_loss.toFixed(2)}`);
+  return parts.join(" · ") || "checkpoint";
+}
+
+function formatWhen(mtime) {
+  if (!mtime) return "";
+  const d = new Date(mtime * 1000);
+  return ` · ${d.toLocaleString()}`;
+}
+
 setTraining(false);   // stop disabled until a job is actually running
 connectEvents();
 refreshStatus();
+refreshModels();
 loadHardware();
+runTokenize();        // tokenize the placeholder text on load

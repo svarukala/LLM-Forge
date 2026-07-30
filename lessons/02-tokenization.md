@@ -3,6 +3,10 @@
 Neural networks only do math on numbers, not letters. **Tokenization** is the step that
 converts text into a sequence of integer IDs (and back).
 
+> 💡 **See it live:** the dashboard's **🔤 Tokenizer playground** (top of
+> `python -m llmforge.cli serve`) splits whatever you type into tokens/IDs in real time.
+> Type a sentence with `char` then `bpe` and compare the `chars/token` number.
+
 ## Two tokenizers in LLM Forge
 
 Code: [`llmforge/tokenizer.py`](../llmforge/tokenizer.py)

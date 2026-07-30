@@ -31,6 +31,8 @@ class ChatSession:
         self.multi_turn = multi_turn
         self.max_history_turns = max_history_turns
         self.history: list[tuple[str, str]] = []  # (user_msg, assistant_msg)
+        # Populated on each reply() so callers (e.g. the dashboard) can show context usage.
+        self.last_context: dict = {"prompt_tokens": 0, "generated_tokens": 0, "block_size": 0}
         try:
             self.eot_id: int | None = self.tokenizer.token_id(EOT)
         except Exception:
@@ -80,6 +82,11 @@ class ChatSession:
         )
         generated = out[0].tolist()[len(ids) :]
         text = self.tokenizer.decode(generated).strip()
+        self.last_context = {
+            "prompt_tokens": len(ids),
+            "generated_tokens": len(generated),
+            "block_size": self.model.cfg.block_size,
+        }
         if self.multi_turn:
             self.history.append((message, text))
         return text

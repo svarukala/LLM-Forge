@@ -11,6 +11,7 @@ Run with:  python -m llmforge.cli serve
 """
 
 import json
+import math
 import os
 import queue
 import threading
@@ -107,6 +108,32 @@ class ChatRequest(BaseModel):
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
 
 
+class SampleRequest(BaseModel):
+    """Generate raw text from a base (pre-training-only) checkpoint."""
+
+    checkpoint: str | None = None
+    prompt: str = Field(default="", max_length=8000)
+    max_new_tokens: int = Field(default=200, ge=1, le=2000)
+    temperature: float = Field(default=0.8, gt=0.0, le=5.0)
+    top_k: int | None = Field(default=40, ge=1, le=100000)
+    top_p: float | None = Field(default=None, gt=0.0, le=1.0)
+    stop_at_eot: bool = True
+
+
+class TokenizeRequest(BaseModel):
+    """Split text into tokens for the interactive tokenizer playground."""
+
+    text: str = Field(default="", max_length=4000)
+    kind: str = Field(default="char")
+
+    @field_validator("kind")
+    @classmethod
+    def _valid_kind(cls, v: str) -> str:
+        if v not in ("char", "bpe"):
+            raise ValueError("kind must be 'char' or 'bpe'")
+        return v
+
+
 def _resolve_preset(params: dict, stage: str) -> dict:
     """Fill in any missing training knob from a named preset, if one was requested.
 
@@ -190,6 +217,29 @@ def _fit_block_size(n_tokens: int, requested: int, floor: int = 8) -> tuple[int,
     return max(block_size, floor), shrunk
 
 
+def _validate_model_config(params: dict) -> None:
+    """Validate the effective model geometry before a pre-training thread is launched.
+
+    Multi-head attention splits ``n_embd`` into ``n_head`` equal slices, so ``n_embd`` must
+    be divisible by ``n_head`` (and there must be at least one channel per head). Catching
+    this at the API boundary returns an actionable 422 instead of letting a background job
+    fail deep inside the model. Defaults mirror those used when building ``ModelConfig``.
+    """
+    n_head = int(params.get("n_head") or 4)
+    n_embd = int(params.get("n_embd") or 128)
+    if n_head > n_embd:
+        raise ValueError(
+            f"n_head ({n_head}) must be <= n_embd ({n_embd}); each attention head needs at "
+            f"least one embedding channel."
+        )
+    if n_embd % n_head != 0:
+        raise ValueError(
+            f"n_embd ({n_embd}) must be divisible by n_head ({n_head}) so the embedding can "
+            f"be split evenly across heads (e.g. n_embd={n_embd - (n_embd % n_head)} or "
+            f"n_head={n_head - 1 if (n_embd % (n_head - 1) == 0 and n_head > 1) else 1})."
+        )
+
+
 def _safe_data_path(path: str) -> str:
     """Restrict a browser-supplied dataset path to trusted locations.
 
@@ -197,8 +247,8 @@ def _safe_data_path(path: str) -> str:
     Only two roots are allowed: the bundled ``data/sample`` datasets and user uploads under
     ``runs/uploads`` (which the /api/upload endpoint writes with sanitized filenames). The
     path may arrive relative or absolute (uploads echo back an absolute path), but it must
-    resolve *inside* one of those roots. Absolute paths elsewhere, ``..`` traversal, and any
-    other location raise ValueError, which the endpoints translate to HTTP 422.
+    resolve *inside* one of those roots AND point at an existing regular file (not a
+    directory or a missing path). Anything else raises ValueError -> HTTP 422.
     """
     candidate = os.path.abspath(path)
     allowed_roots = [
@@ -207,10 +257,13 @@ def _safe_data_path(path: str) -> str:
     ]
     for root in allowed_roots:
         try:
-            if candidate != root and os.path.commonpath([candidate, root]) == root:
-                return candidate
+            under = candidate != root and os.path.commonpath([candidate, root]) == root
         except ValueError:
-            continue  # e.g. different drive on Windows -> not under this root
+            under = False  # e.g. different drive on Windows -> not under this root
+        if under:
+            if not os.path.isfile(candidate):
+                raise ValueError(f"data path not found or not a regular file: {path}")
+            return candidate
     raise ValueError(
         "data path must be a bundled sample under data/sample/ or an uploaded file "
         "under runs/uploads/"
@@ -529,6 +582,15 @@ def create_app():
     def status():
         return manager.status()
 
+    @app.get("/api/checkpoints")
+    def checkpoints():
+        summaries = [s for s in (_checkpoint_summary(n) for n in _list_checkpoints()) if s]
+        return {
+            "checkpoints": summaries,
+            "has_base": any(s["name"] == "base" for s in summaries),
+            "has_chat": any(s["name"] == "chat" for s in summaries),
+        }
+
     @app.get("/api/hardware")
     def hardware():
         from ..presets import PRESETS, detect_hardware, recommend_preset
@@ -547,6 +609,13 @@ def create_app():
         except ValidationError as e:
             return JSONResponse({"error": json.loads(e.json())}, status_code=422)
         params = req.model_dump()
+        # Resolve the preset now so we can validate the *effective* model geometry before a
+        # background job is ever created (invalid combos should 422, not fail asynchronously).
+        params = _resolve_preset(params, "pretrain")
+        try:
+            _validate_model_config(params)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=422)
         if params.get("data"):
             try:
                 params["data"] = _safe_data_path(params["data"])
@@ -597,6 +666,16 @@ def create_app():
         name = os.path.basename(raw_name).strip() or "upload.txt"
         if name.startswith("."):
             return JSONResponse({"error": "invalid filename"}, status_code=422)
+        expected_ext = ".txt" if req.kind == "corpus" else ".jsonl"
+        if os.path.splitext(name)[1].lower() != expected_ext:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"{req.kind} uploads must be a {expected_ext} file " f"(got {name!r})."
+                    )
+                },
+                status_code=422,
+            )
         try:
             updir = _safe_run_path("uploads")
             os.makedirs(updir, exist_ok=True)
@@ -642,7 +721,73 @@ def create_app():
             top_k=req.top_k,
             top_p=req.top_p,
         )
-        return {"reply": reply}
+        return {"reply": reply, "context": session.last_context}
+
+    @app.post("/api/sample")
+    async def sample(request: Request):
+        try:
+            req = SampleRequest(**await _json(request))
+        except ValidationError as e:
+            return JSONResponse({"error": json.loads(e.json())}, status_code=422)
+        raw = req.checkpoint or os.path.join(RUNS_DIR, "base")
+        try:
+            checkpoint = _under_runs(raw)
+        except ValueError:
+            return JSONResponse({"error": "invalid checkpoint path"}, status_code=422)
+        if not os.path.exists(os.path.join(checkpoint, "config.json")):
+            return JSONResponse(
+                {"error": "No base checkpoint yet. Pre-train first."},
+                status_code=400,
+            )
+        from ..sample import generate_text
+
+        try:
+            text = generate_text(
+                checkpoint,
+                prompt=req.prompt,
+                max_new_tokens=req.max_new_tokens,
+                temperature=req.temperature,
+                top_k=req.top_k,
+                top_p=req.top_p,
+                stop_at_eot=req.stop_at_eot,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return {"text": text, "checkpoint": os.path.basename(os.path.normpath(checkpoint))}
+
+    @app.post("/api/tokenize")
+    async def tokenize(request: Request):
+        try:
+            req = TokenizeRequest(**await _json(request))
+        except ValidationError as e:
+            return JSONResponse({"error": json.loads(e.json())}, status_code=422)
+        from ..tokenizer import CharTokenizer, load_tokenizer
+
+        if req.kind == "char":
+            # The char tokenizer needs no corpus, so we build one live from the text itself.
+            tok = CharTokenizer.train(req.text or " ")
+            source = "live (built from this text)"
+        else:
+            tok_path = _find_checkpoint_tokenizer("bpe")
+            if tok_path is None:
+                return JSONResponse(
+                    {
+                        "error": "No BPE tokenizer yet. Pre-train a model with the "
+                        "'bpe' tokenizer first, or switch to 'char'."
+                    },
+                    status_code=400,
+                )
+            tok = load_tokenizer(tok_path)
+            source = f"checkpoint: {os.path.basename(os.path.dirname(tok_path))}"
+        pieces = tok.pieces(req.text)
+        return {
+            "kind": req.kind,
+            "source": source,
+            "count": len(pieces),
+            "vocab_size": tok.vocab_size,
+            "tokens": pieces,
+        }
 
     @app.get("/")
     def index():
@@ -682,6 +827,85 @@ def _list_checkpoints() -> list[str]:
         if os.path.exists(os.path.join(RUNS_DIR, name, "config.json")):
             out.append(name)
     return sorted(out)
+
+
+def _checkpoint_summary(name: str) -> dict | None:
+    """A cheap, human-friendly summary of one checkpoint (reads config.json, no model load)."""
+    from ..checkpoint import TOKENIZER_FILENAME, checkpoint_info
+    from ..tokenizer import load_tokenizer_meta
+
+    out_dir = os.path.join(RUNS_DIR, name)
+    cfg_path = os.path.join(out_dir, "config.json")
+    if not os.path.exists(cfg_path):
+        return None
+    try:
+        info = checkpoint_info(out_dir)
+    except Exception:
+        return None
+    model = info.get("model", {})
+    meta = info.get("meta", {})
+    tok_meta = load_tokenizer_meta(os.path.join(out_dir, TOKENIZER_FILENAME)) or {}
+    role = {"base": "Pre-trained base", "chat": "Fine-tuned (chat)"}.get(name, "Checkpoint")
+    try:
+        modified = os.path.getmtime(cfg_path)
+    except OSError:
+        modified = None
+    return {
+        "name": name,
+        "role": role,
+        "n_layer": model.get("n_layer"),
+        "n_head": model.get("n_head"),
+        "n_embd": model.get("n_embd"),
+        "vocab_size": model.get("vocab_size"),
+        "block_size": model.get("block_size"),
+        "steps": meta.get("completed_steps"),
+        "final_loss": _finite_or_none(meta.get("final_loss")),
+        "final_perplexity": _finite_or_none(meta.get("final_perplexity")),
+        "status": meta.get("status"),
+        "tokenizer_kind": tok_meta.get("kind"),
+        "resumable": bool(info.get("resumable", False)),
+        "modified": modified,
+    }
+
+
+def _finite_or_none(value):
+    """JSON can't represent NaN/inf; a stopped run may leave a non-finite loss. Coerce to None."""
+    if isinstance(value, int | float) and math.isfinite(value):
+        return value
+    return None
+
+
+def _find_checkpoint_tokenizer(kind: str) -> str | None:
+    """Return the path to a saved tokenizer of ``kind`` from an existing checkpoint.
+
+    Prefers ``base`` then ``chat`` then any other checkpoint. Used by the tokenizer
+    playground so the BPE view uses the real tokenizer a model was trained with.
+    """
+    from ..checkpoint import TOKENIZER_FILENAME
+    from ..tokenizer import load_tokenizer_meta
+
+    names = _list_checkpoints()
+    preferred = [n for n in ("base", "chat") if n in names]
+    ordered = preferred + [n for n in names if n not in ("base", "chat")]
+    for name in ordered:
+        path = os.path.join(RUNS_DIR, name, TOKENIZER_FILENAME)
+        if not os.path.exists(path):
+            continue
+        meta = load_tokenizer_meta(path)
+        if meta is not None:
+            if meta.get("kind") == kind:
+                return path
+            continue
+        # No sidecar metadata — detect char vs bpe from the file head.
+        try:
+            with open(path, encoding="utf-8") as f:
+                head = f.read(64)
+        except OSError:
+            continue
+        detected = "char" if '"kind": "char"' in head or '"kind":"char"' in head else "bpe"
+        if detected == kind:
+            return path
+    return None
 
 
 def run(host: str = "127.0.0.1", port: int = 8000, allow_public: bool = False) -> None:

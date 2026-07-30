@@ -109,9 +109,27 @@ It's the honesty check:
 - **train falling but val flat/rising** → **overfitting**: the model is memorizing the
   training text instead of learning general patterns. Time to stop or add data.
 
+#### **perplexity**
+A friendlier restatement of loss: `perplexity = e^loss`. It reads as *"how many words the
+model is effectively choosing between"* at each step. Loss `3.2` → perplexity ≈ `24`, i.e.
+the model is about as unsure as if it were guessing among ~24 words. **Lower is better**;
+a perfect model would score `1`. It moves in lockstep with loss — some people just find
+"choosing between 24 words" more intuitive than "cross-entropy 3.2." (On eval steps this
+tile switches to the **validation** perplexity so you compare apples to apples.)
+
+#### **lr** (learning rate)
+The live value of the step size described in Part B. You'll see it **warm up** (rise for the
+first few percent of training) then **decay** toward zero. Watching it explains sudden loss
+behavior: the little early wobble is the warm-up, and the smooth glide at the end is the
+decay letting the model settle. Shown in scientific notation (e.g. `3.0e-4`).
+
 #### **tok/s** (tokens per second)
 Throughput — how many tokens the model chews through each second. Purely a *speed* gauge
 (hardware/model-size dependent), not a quality signal. GPUs push this 10–100× higher than CPU.
+
+#### **eta** (estimated time remaining)
+A running guess of how long until this job hits your **Steps** target, based on the recent
+`tok/s`. It steadies once training finds its rhythm. Pairs with the progress bar.
 
 #### **device**
 Where training runs: `cpu`, `cuda` (NVIDIA GPU), or `mps` (Apple Silicon). Auto-detected.
@@ -121,6 +139,85 @@ If you expected `cuda` but see `cpu`, PyTorch can't see your GPU.
 Every so often the model is asked to generate a bit of text *right now*, so you can watch
 quality improve in real time. Early samples are word-salad; later ones read like the corpus.
 This is the fun part — loss is abstract, but seeing gibberish turn into stories is visceral.
+
+---
+
+## Part D · Chatting with your model (sampling controls)
+
+Once you've fine-tuned, the **Chat** panel lets you talk to your model. Three knobs above the
+message box control *how it picks each next word* — same settings real LLM APIs expose. They
+don't change what the model knows, only how adventurous it is when choosing:
+
+#### **temperature**
+The "creativity dial." The model produces a probability for every possible next token;
+temperature reshapes that list before we draw from it.
+
+- **Low (`0.1–0.5`)** → focused, safe, repetitive. Picks the obvious word almost every time.
+- **Default (`0.8`)** → balanced.
+- **High (`1.2+`)** → wilder, more surprising, more typos and nonsense.
+
+`temperature` must be greater than `0` (0 would be a divide-by-zero — use a small value like
+`0.1` for near-deterministic output).
+
+#### **top-k**
+"Only consider the **K** most likely next words, ignore the rest." `top-k = 40` means at each
+step the model rolls the dice among just its top 40 candidates. Smaller = safer/tighter;
+larger = more variety. Must be `1` or more.
+
+#### **top-p** (nucleus sampling)
+An alternative to top-k: "keep the smallest set of words whose probabilities add up to **P**
+(e.g. `0.9`), then choose among those." It adapts automatically — few candidates when the
+model is confident, many when it isn't. Leave it **blank (off)** to rely on top-k alone;
+if set, it must be between `0` and `1`.
+
+> Tip: temperature + top-k is a great starting combo. Add top-p only if you want the model to
+> self-adjust how many options it considers.
+
+#### **context meter**
+The slim bar under the controls shows **how much of the model's short-term memory each
+exchange uses**: `tokens used / block_size`. Remember **block size** from Part B — it's the
+fixed window of tokens the model can see at once. As your prompt (plus the reply) grows toward
+that limit the bar fills and turns orange near `90%`; past it, the oldest tokens fall out of
+view. It makes the model's "memory span" tangible instead of abstract.
+
+---
+
+## Part E · Exploration panels (see the model think)
+
+Two extra panels let you poke at the pieces directly — great for a demo "aha".
+
+### 🗂️ Your models (status strip)
+At the very top: a strip showing which stages you've already completed. Checkpoints live in
+`runs/` **on disk**, so they persist across restarts — if you pre-trained and fine-tuned
+yesterday, the strip lights up **1 · Pre-trained base ✓** and **2 · Fine-tuned (chat) ✓**
+when you reopen the dashboard today. Each stage shows the model size (`layers×width`),
+tokenizer kind, step count, and final loss, read cheaply from the checkpoint's `config.json`
+(code: [`checkpoint.py::checkpoint_info`](../llmforge/checkpoint.py), served by
+`/api/checkpoints`). A grey dot means "not built yet"; a green dot means "ready". It refreshes
+automatically when a training job finishes.
+
+### 🔤 Tokenizer playground
+At the top of the page: type any text and watch it split **live** into the tokens a model
+actually reads. Each chip is one token; the small number is its **ID** (its index in the
+vocabulary). A space shows as `␣` and a newline as `⏎` so you can see them. The summary line
+reports token count, character count, and **chars/token** — the key efficiency number.
+
+- **`char`** always works (no model needed): one token per character, so chars/token ≈ 1.
+- **`bpe`** uses the real tokenizer from a model you've already pre-trained. Type the same
+  sentence both ways and watch BPE pack whole sub-words (`ing`, `the`, ` cat`) into single
+  tokens — chars/token jumps to ~3–4. That's *why* real LLMs use BPE: fewer tokens per
+  sentence means more text fits in the same context window. See [Lesson 2](02-tokenization.md).
+
+### 🔬 Sample the base model
+After pre-training finishes, this panel generates raw text from the **base** checkpoint
+(`runs/base`) — *before* any fine-tuning. It's pure **autocomplete**: give it a prompt and it
+continues in the corpus's style, with no concept of "answering a question." It uses the same
+**temperature / top-k / top-p** knobs as chat (Part D), plus a **length** field.
+
+This is the single clearest way to feel what each training stage does: sample the base model
+(rambling but fluent continuation), then **fine-tune**, then compare with the **Chat** panel
+(now it responds to instructions). Same underlying weights — fine-tuning just taught it the
+*shape* of a conversation.
 
 ---
 

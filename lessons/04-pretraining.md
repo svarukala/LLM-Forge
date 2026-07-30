@@ -4,6 +4,11 @@
 text and repeatedly predicting the next token. Code:
 [`llmforge/train.py`](../llmforge/train.py) and [`llmforge/data.py`](../llmforge/data.py).
 
+> 💡 **See it live:** after pre-training in the dashboard, use the **🔬 Sample the base model**
+> panel to generate raw text from the pre-trained-only checkpoint. It's pure autocomplete —
+> fluent but with no idea of "answering" yet. Fine-tune next ([Lesson 5](05-finetuning.md))
+> and compare in the Chat panel.
+
 ## The loop (this is the entire algorithm)
 
 1. Grab a random window of tokens from the corpus → inputs `x` and the same window shifted

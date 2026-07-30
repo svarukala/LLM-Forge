@@ -283,6 +283,19 @@ notes for when you dig in: you can **upload your own corpus** (`.txt`) for pre-t
 your own **chat pairs** (`.jsonl`) for fine-tuning, and pick the tokenizer (char/BPE) from a
 dropdown. Everything the CLI does is available as a button.
 
+The **Training monitor** streams live numbers as the model learns — `status`, `step`, `loss`,
+`val`, `perplexity`, `lr`, `tok/s`, `eta`, and `device`. **Hover any label for a plain-English
+tooltip** (dotted underline = hoverable). The **Chat** panel adds `temperature` / `top-k` /
+`top-p` sampling controls and a **context-usage meter** showing how much of the model's memory
+each exchange fills. A **Your models** strip at the top shows which stages you've already
+completed — pre-trained `base` and fine-tuned `chat` are read from `runs/` on disk, so work
+from a previous session (with its size, tokenizer, steps, and final loss) shows up after a
+restart. Two exploration panels help it click: a **🔤 Tokenizer playground** (type text, watch
+it split into tokens/IDs live — compare `char` vs `bpe`) and a **🔬 Sample the base model**
+panel that shows the raw autocomplete of the pre-trained-only checkpoint *before* fine-tuning.
+Every one of these is explained in
+[Lesson 6 · Dashboard field guide](lessons/06-dashboard-glossary.md).
+
 > ⚠️ **Security:** the dashboard has **no authentication** and binds to `localhost` only by
 > default. It will refuse to bind to a public interface unless you pass `--allow-public`
 > (which prints a warning). Only expose it on a network you trust. See [`SECURITY.md`](SECURITY.md).

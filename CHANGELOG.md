@@ -19,6 +19,21 @@ All notable changes to LLM Forge are documented here. The format is based on
   `top_p` outside `(0, 1]` with a 422 instead of failing later inside the model.
 
 ### Added
+- **"Your models" status strip**: the dashboard now shows which stages already exist on disk
+  (pre-trained `base`, fine-tuned `chat`) with each checkpoint's size, tokenizer, steps, and
+  final loss, via a new `/api/checkpoints` endpoint. Work from a previous session persists and
+  is visible after a restart. Non-finite (NaN) losses from stopped runs are reported as null.
+- **Tokenizer playground**: a dashboard panel (and `/api/tokenize`) that splits text into
+  tokens/IDs live, for both `char` and a trained `bpe` tokenizer, so users can *see* why
+  sub-word tokenization is more efficient.
+- **Base-model sampling panel**: a dashboard panel (and `/api/sample`, wrapping
+  `sample.generate_text`) that generates raw autocomplete from the pre-training-only
+  checkpoint, making the difference between pre-training and fine-tuning tangible.
+- **Dashboard learning aids**: the Training monitor now shows live **perplexity** and
+  **learning-rate** tiles, and **every monitor label has a plain-English hover tooltip**
+  (e.g. what `train` loss vs `val` loss mean). The Chat panel gained **temperature / top-k /
+  top-p** sampling controls and a **context-usage meter** (`tokens used / block_size`).
+  [Lesson 6 · Dashboard field guide](lessons/06-dashboard-glossary.md) documents all of them.
 - **Hardened `--resume`**: verifies model block size, vocabulary size, tokenizer kind, and
   corpus fingerprint before resuming, and persists/restores the dataset-local RNG so resumed
   training is reproducible (a 5+5 resumed run matches a straight 10-step run).

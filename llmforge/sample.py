@@ -15,7 +15,7 @@ def generate_text(
     prompt: str,
     max_new_tokens: int = 200,
     temperature: float = 0.8,
-    top_k: int = 40,
+    top_k: int | None = 40,
     top_p: float | None = None,
     stop_at_eot: bool = True,
     device: str | None = None,

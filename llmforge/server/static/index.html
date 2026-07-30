@@ -26,6 +26,50 @@
       </div>
     </section>
 
+    <section class="card wide" id="models-card">
+      <h2>Your models</h2>
+      <p class="hint">What you've built so far, loaded from <code>runs/</code> on disk — this
+        persists across restarts, so yesterday's pre-train and fine-tune show up here.</p>
+      <div id="models-strip" class="models-strip">
+        <div class="stage" id="stage-base">
+          <span class="stage-dot"></span>
+          <div class="stage-body">
+            <div class="stage-title">1 · Pre-trained base</div>
+            <div class="stage-detail" id="stage-base-detail">checking…</div>
+          </div>
+        </div>
+        <div class="stage-arrow">→</div>
+        <div class="stage" id="stage-chat">
+          <span class="stage-dot"></span>
+          <div class="stage-body">
+            <div class="stage-title">2 · Fine-tuned (chat)</div>
+            <div class="stage-detail" id="stage-chat-detail">checking…</div>
+          </div>
+        </div>
+      </div>
+      <div id="models-extra" class="models-extra"></div>
+    </section>
+
+    <section class="card wide">
+      <h2>🔤 Tokenizer playground</h2>
+      <p class="hint">Before a model can learn, text is chopped into <em>tokens</em>. Type
+        anything and watch it split live — each chip is one token the model reads, and the
+        small number is its ID. Try the same sentence with <code>char</code> vs <code>bpe</code>
+        to see why sub-word tokens are more efficient.</p>
+      <div class="controls">
+        <label title="char = one token per character (no training needed). bpe = sub-word tokens from a model you've already pre-trained.">Tokenizer
+          <select id="tok-kind">
+            <option value="char">char (one per character)</option>
+            <option value="bpe">bpe (sub-word, from your model)</option>
+          </select>
+        </label>
+        <span id="tok-source" class="filename"></span>
+      </div>
+      <textarea id="tok-input" class="tok-input" rows="2" placeholder="Type text to tokenize…">Once upon a time, a little robot learned to read.</textarea>
+      <div class="tok-summary"><span id="tok-count">—</span></div>
+      <div id="tok-output" class="tok-output"></div>
+    </section>
+
     <section class="card">
       <h2>1 · Pre-train</h2>
       <p class="hint">Learn from raw text. Watch the loss fall as the model discovers the
@@ -52,7 +96,7 @@
         Requires a base checkpoint first.</p>
       <div class="controls">
         <label>Steps <input id="ft-steps" type="number" value="300" min="10" /></label>
-        <label>Chat data (.jsonl) <input id="ft-file" type="file" accept=".jsonl,.json,application/json" /></label>
+        <label class="full-row">Chat data (.jsonl) <input id="ft-file" type="file" accept=".jsonl,.json,application/json" /></label>
       </div>
       <p id="ft-file-name" class="filename">Using built-in sample chat pairs.</p>
       <button id="btn-finetune" class="primary">Start fine-tuning</button>
@@ -73,13 +117,15 @@
         <span id="info-message"></span>
       </div>
       <div class="stats">
-        <div><span class="k">status</span><span id="stat-status" class="v">idle</span></div>
-        <div><span class="k">step</span><span id="stat-step" class="v">—</span></div>
-        <div><span class="k">loss</span><span id="stat-loss" class="v">—</span></div>
-        <div><span class="k">val</span><span id="stat-val" class="v">—</span></div>
-        <div><span class="k">tok/s</span><span id="stat-tps" class="v">—</span></div>
-        <div><span class="k">eta</span><span id="stat-eta" class="v">—</span></div>
-        <div><span class="k">device</span><span id="stat-device" class="v">—</span></div>
+        <div><span class="k" title="What the workbench is doing right now: idle, training, done, or error.">status</span><span id="stat-status" class="v">idle</span></div>
+        <div><span class="k" title="Which training step (batch update) we're on, out of the total planned steps.">step</span><span id="stat-step" class="v">—</span></div>
+        <div><span class="k" title="Training loss on the data the model is learning from. Lower = better predictions. This is what training pushes down.">loss</span><span id="stat-loss" class="v">—</span></div>
+        <div><span class="k" title="Validation loss: the same score measured on held-out text the model never trains on. It shows whether the model is truly learning or just memorizing. If val stops falling (or rises) while loss keeps dropping, that's overfitting.">val</span><span id="stat-val" class="v">—</span></div>
+        <div><span class="k" title="Perplexity = e^loss. Roughly 'how many words the model is choosing between' at each step. Lower is better; 1 = perfect.">perplexity</span><span id="stat-ppl" class="v">—</span></div>
+        <div><span class="k" title="Learning rate: how big a step the optimizer takes each update. It warms up then decays over training.">lr</span><span id="stat-lr" class="v">—</span></div>
+        <div><span class="k" title="Tokens processed per second — training throughput. Higher means faster training (depends on your hardware).">tok/s</span><span id="stat-tps" class="v">—</span></div>
+        <div><span class="k" title="Estimated time remaining until this training job finishes.">eta</span><span id="stat-eta" class="v">—</span></div>
+        <div><span class="k" title="Hardware doing the math: cpu, cuda (NVIDIA GPU), or mps (Apple GPU).">device</span><span id="stat-device" class="v">—</span></div>
       </div>
       <div id="progress-wrap" class="progress-wrap" hidden>
         <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
@@ -91,8 +137,50 @@
     </section>
 
     <section class="card wide">
+      <h2>🔬 Sample the base model</h2>
+      <p class="hint">Generate raw text from the <strong>pre-trained-only</strong> checkpoint
+        (<code>runs/base</code>) — <em>before</em> any fine-tuning. This is pure autocomplete:
+        it continues your prompt in the style of the corpus, with no idea of "answering". Fine-tune
+        next, then compare it with the Chat panel below.</p>
+      <div class="controls">
+        <label title="Higher = more random/creative, lower = more focused and repetitive.">
+          temperature <input id="samp-temp" type="number" value="0.8" min="0.1" max="5" step="0.1" />
+        </label>
+        <label title="Sample only from the K most likely next tokens. Higher = more variety.">
+          top-k <input id="samp-topk" type="number" value="40" min="1" step="1" />
+        </label>
+        <label title="Nucleus sampling: keep the smallest set of tokens whose probability adds up to P. Leave blank to disable.">
+          top-p <input id="samp-topp" type="number" placeholder="off" min="0.05" max="1" step="0.05" />
+        </label>
+        <label title="How many tokens to generate.">
+          length <input id="samp-len" type="number" value="200" min="1" max="2000" step="10" />
+        </label>
+      </div>
+      <form id="samp-form" class="chat-form">
+        <input id="samp-prompt" placeholder="Once upon a time…" autocomplete="off" />
+        <button id="samp-btn" class="primary">Generate</button>
+      </form>
+      <pre id="samp-output" class="samples">Pre-train a model, then generate here.</pre>
+    </section>
+
+    <section class="card wide">
       <h2>3 · Chat with your model</h2>
       <p class="hint">Uses the fine-tuned checkpoint (<code>runs/chat</code>).</p>
+      <div class="controls chat-controls">
+        <label title="Higher = more random/creative, lower = more focused and repetitive.">
+          temperature <input id="chat-temp" type="number" value="0.8" min="0.1" max="5" step="0.1" />
+        </label>
+        <label title="Sample only from the K most likely next tokens. Higher = more variety.">
+          top-k <input id="chat-topk" type="number" value="40" min="1" step="1" />
+        </label>
+        <label title="Nucleus sampling: keep the smallest set of tokens whose probability adds up to P. Leave blank to disable.">
+          top-p <input id="chat-topp" type="number" placeholder="off" min="0.05" max="1" step="0.05" />
+        </label>
+      </div>
+      <div id="chat-context" class="context-meter" hidden>
+        <div class="context-track"><div id="context-bar" class="context-bar"></div></div>
+        <span id="context-label" class="context-label"></span>
+      </div>
       <div id="chat-log" class="chat-log"></div>
       <form id="chat-form" class="chat-form">
         <input id="chat-input" placeholder="Ask your model something…" autocomplete="off" />

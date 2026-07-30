@@ -58,3 +58,19 @@ def test_all_special_tokens_present():
     tok = train_tokenizer(_char_text(), kind="char")
     for sp in SPECIAL_TOKENS:
         assert isinstance(tok.token_id(sp), int)
+
+
+def test_char_pieces_match_encoding():
+    tok = train_tokenizer(_char_text(), kind="char")
+    pieces = tok.pieces("hello")
+    assert [p["piece"] for p in pieces] == list("hello")
+    assert [p["id"] for p in pieces] == tok.encode("hello")
+
+
+def test_bpe_pieces_reconstruct_text():
+    tok = train_tokenizer("the cat sat on the mat. " * 40, kind="bpe", vocab_size=200)
+    text = "the cat sat"
+    pieces = tok.pieces(text)
+    assert [p["id"] for p in pieces] == tok.encode(text)
+    # Joining the (space-restored) pieces reproduces the original text.
+    assert "".join(p["piece"] for p in pieces) == text
